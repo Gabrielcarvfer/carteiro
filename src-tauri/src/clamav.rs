@@ -191,6 +191,15 @@ impl Bins {
             c.env("CURL_CA_BUNDLE", bundle);
         }
         c.stdin(Stdio::null()).kill_on_drop(true);
+        // If Carteiro dies without cleaning up (killed, out of memory), the
+        // kernel stops ClamAV too instead of leaving it holding our files.
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        unsafe {
+            c.pre_exec(|| {
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+                Ok(())
+            });
+        }
         c
     }
 }
@@ -274,6 +283,53 @@ impl Engine {
         Ok(first || log.contains("updated") || log.contains("Downloaded"))
     }
 
+    /// Stops a clamd left behind by an earlier run with our data folder (it
+    /// would hold the log and socket). Only a process that is verifiably our
+    /// engine with our config is touched.
+    async fn stop_stale_clamd(&self, conf: &Path) {
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        {
+            let marker = format!("--config-file={}", conf.display());
+            let me = std::process::id();
+            for entry in std::fs::read_dir("/proc").into_iter().flatten().flatten() {
+                let Some(pid) = entry.file_name().to_str().and_then(|n| n.parse::<i32>().ok()) else { continue };
+                if pid as u32 == me {
+                    continue;
+                }
+                let Ok(cmd) = std::fs::read(entry.path().join("cmdline")) else { continue };
+                let args: Vec<String> = cmd.split(|b| *b == 0).map(|a| String::from_utf8_lossy(a).into_owned()).collect();
+                let is_clamd = args.first().is_some_and(|a| a.ends_with("clamd") || a.ends_with("libclamd.so"));
+                if is_clamd && args.contains(&marker) {
+                    unsafe { libc::kill(pid, libc::SIGTERM) };
+                    for _ in 0..50 {
+                        if !entry.path().exists() {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                    if entry.path().exists() {
+                        unsafe { libc::kill(pid, libc::SIGKILL) };
+                    }
+                }
+            }
+        }
+        #[cfg(windows)]
+        {
+            let _ = conf;
+            let pidfile = self.dir.join("clamd.pid");
+            if let Some(pid) = std::fs::read_to_string(&pidfile).ok().and_then(|p| p.trim().parse::<u32>().ok()) {
+                let filter = format!("PID eq {pid}");
+                let listed = Command::new("tasklist").args(["/FI", &filter, "/FO", "CSV", "/NH"]).output().await;
+                if listed.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).to_ascii_lowercase().contains("clamd.exe")) {
+                    let _ = Command::new("taskkill").args(["/PID", &pid.to_string(), "/F"]).output().await;
+                }
+            }
+            let _ = std::fs::remove_file(pidfile);
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "android", windows)))]
+        let _ = conf;
+    }
+
     async fn start_clamd(&self) -> Result<(), String> {
         let bins = self.bins.as_ref().ok_or("ClamAV isn't included in this build")?;
         // Unix: a socket inside our 0700 folder, reachable only by this user.
@@ -290,20 +346,25 @@ impl Engine {
         std::fs::write(
             &conf,
             format!(
-                "DatabaseDirectory {db}\n{listen}\nForeground yes\nLogFile {log}\nLogTime yes\n\
+                "DatabaseDirectory {db}\n{listen}\nForeground yes\nLogFile {log}\nLogTime yes\nPidFile {pid}\n\
                  MaxThreads 4\nStreamMaxLength 150M\nMaxScanSize 400M\nMaxFileSize 150M\nMaxRecursion 17\n\
                  AlertBrokenExecutables yes\nAlertEncrypted no\nAlertOLE2Macros no\nPhishingSignatures yes\nPhishingScanURLs yes\n",
                 db = self.db_dir().display(),
-                log = self.dir.join("clamd.log").display()
+                log = self.dir.join("clamd.log").display(),
+                pid = self.dir.join("clamd.pid").display()
             ),
         )
         .map_err(|e| e.to_string())?;
+        self.stop_stale_clamd(&conf).await;
         self.set("starting", "Loading virus signatures…");
+        // Startup errors go to stderr, not the log: keep them for the message.
+        let errfile = self.dir.join("clamd.stderr");
+        let stderr = std::fs::File::create(&errfile).map(Stdio::from).unwrap_or_else(|_| Stdio::null());
         let child = bins
             .command(&bins.clamd)
             .arg(format!("--config-file={}", conf.display()))
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(stderr)
             .spawn()
             .map_err(|e| format!("couldn't start clamd: {e}"))?;
         *self.child.lock().await = Some(child);
@@ -320,7 +381,14 @@ impl Engine {
             }
             if let Some(c) = self.child.lock().await.as_mut() {
                 if let Ok(Some(code)) = c.try_wait() {
-                    return Err(format!("clamd exited during startup ({code}); see {}", self.dir.join("clamd.log").display()));
+                    let why = std::fs::read_to_string(&errfile).unwrap_or_default();
+                    let last: Vec<&str> = why.lines().filter(|l| !l.trim().is_empty()).collect();
+                    let detail = last[last.len().saturating_sub(3)..].join(" ");
+                    return Err(if detail.is_empty() {
+                        format!("clamd exited during startup ({code}); see {}", self.dir.join("clamd.log").display())
+                    } else {
+                        format!("clamd exited during startup ({code}): {detail}")
+                    });
                 }
             }
             if tokio::time::Instant::now() > deadline {

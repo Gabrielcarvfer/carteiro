@@ -22,6 +22,11 @@ tauri = { version = "2", default-features = false, features = ["wry", "common-co
 tokio = { version = "1", features = ["time", "process", "sync"] }
 
 # Linux shows notifications through gdbus instead (see src/notify.rs).
+# prctl(PR_SET_PDEATHSIG) so the bundled clamd exits with the app (libc is
+# already in the dependency tree through tokio).
+[target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
+libc = "0.2"
+
 [target.'cfg(not(target_os = "linux"))'.dependencies]
 tauri-plugin-notification = "2"
 

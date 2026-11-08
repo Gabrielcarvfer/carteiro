@@ -392,6 +392,7 @@ name = "carteiro"
 version = "0.1.0"
 dependencies = [
  "keyring",
+ "libc",
  "mail-core",
  "serde",
  "serde_json",
