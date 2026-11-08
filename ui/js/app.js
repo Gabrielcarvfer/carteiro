@@ -378,12 +378,15 @@ async function act(kind, ids, dest, acct = S.viewAcct ?? S.account?.id) {
 }
 
 // kind is "delete" | "read" | "flag" | "unflag" | "move-to:<folder>" (drag and drop).
+// An action on a whole conversation, as Outlook does: read, unread and flags
+// cover all its messages in every folder; delete and move every copy of
+// them in the folder shown.
+const EVERYWHERE = new Set(["read", "unread", "flag", "unflag"]);
 async function threadAct(ref, kind) {
   patchThreads([ref], kind);
   const [acct, key] = splitRef(ref);
   const folder = S.threads.find((t) => t.ref === ref)?.folder ?? S.folder;
-  const msgs = (await guard(api.openThread(acct, key))) ?? [];
-  const ids = msgs.filter((m) => m.folder === folder).map((m) => m.id);
+  const ids = (await guard(api.threadIds(acct, key, EVERYWHERE.has(kind) ? null : folder))) ?? [];
   if (kind.startsWith("move-to:")) await act("move", ids, kind.slice(8), acct);
   else await act(kind, ids, undefined, acct);
 }
@@ -1039,11 +1042,15 @@ on("click", "quoted", (el) => { S.showQuoted[+el.dataset.id] = !S.showQuoted[+el
 on("click", "load-images", (el) => { S.images[+el.dataset.id] = true; renderReader(); });
 on("click", "light", (el) => { S.light[+el.dataset.id] = !S.light[+el.dataset.id]; renderReader(); });
 on("click", "conv", (el) => {
-  const ids = S.messages.map((m) => m.id);
-  if (el.dataset.kind === "archive") act("move", ids, (S.viewFolders ?? S.folders).find((f) => f.special === "archive")?.name ?? "Archive");
-  else act(el.dataset.kind, ids);
+  if (!S.selected) return;
+  const kind = el.dataset.kind;
+  if (kind === "archive") return threadAct(S.selected, `move-to:${(S.viewFolders ?? S.folders).find((f) => f.special === "archive")?.name ?? "Archive"}`);
+  // The open view updates at once; the server gets every copy.
+  const field = { flag: ["flagged", true], unflag: ["flagged", false], read: ["seen", true], unread: ["seen", false] }[kind];
+  if (field) { for (const m of S.messages) m[field[0]] = field[1]; renderReader(); }
+  threadAct(S.selected, kind);
 });
-on("change", "move-to", (el) => el.value && act("move", S.messages.map((m) => m.id), el.value));
+on("change", "move-to", (el) => el.value && S.selected && threadAct(S.selected, `move-to:${el.value}`));
 
 let searchTimer;
 on("input", "search", (el) => {

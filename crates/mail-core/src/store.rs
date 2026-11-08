@@ -1075,6 +1075,17 @@ impl Store {
         Ok(rows.into_iter().filter(|m| seen.insert(m.message_id.clone())).collect())
     }
 
+    /// Every message of a conversation (each copy, none merged), in one
+    /// folder or in all of them: what an action on the whole conversation
+    /// must touch.
+    pub fn thread_message_ids(&self, account_id: i64, thread_key: &str, folder: Option<&str>) -> Result<Vec<i64>> {
+        let mut st = self.conn.prepare_cached(
+            "SELECT id FROM messages WHERE account_id = ?1 AND thread_key = ?2 AND (?3 IS NULL OR folder = ?3) ORDER BY id",
+        )?;
+        let rows = st.query_map(params![account_id, thread_key, folder], |r| r.get(0))?.collect::<rusqlite::Result<Vec<i64>>>()?;
+        Ok(rows)
+    }
+
     pub fn messages_in_folder(&self, account_id: i64, folder: &str) -> Result<Vec<StoredMessage>> {
         let mut st = self.conn.prepare_cached(&format!(
             "SELECT {MSG_COLS} FROM messages WHERE account_id = ?1 AND folder = ?2 ORDER BY date DESC"
@@ -2070,5 +2081,20 @@ mod tests {
         assert_eq!(s.list_rules().unwrap().len(), 1);
         let mut bad = Rule::move_from_sender("x", "");
         assert!(s.save_rule(&mut bad).is_err());
+    }
+
+    #[test]
+    fn whole_conversations_include_every_copy() {
+        let (s, a) = store_with_account();
+        let root = insert(&s, a, 1, meta("r", &[], "Plans", 100));
+        let reply = insert(&s, a, 2, meta("p", &["r"], "Re: Plans", 200));
+        // The same reply also in Archive (a copy), and one of ours in Sent.
+        let copy = s.insert_message(&NewMessage { account_id: a, folder: "Archive".into(), uid: Some(9), pop_uidl: None, meta: meta("p", &["r"], "Re: Plans", 200), seen: false, flagged: false, size: 1, raw: None }).unwrap();
+        let sent = s.insert_message(&NewMessage { account_id: a, folder: "Sent".into(), uid: Some(5), pop_uidl: None, meta: meta("q", &["p"], "Re: Plans", 300), seen: true, flagged: false, size: 1, raw: None }).unwrap();
+        let key = key_of(&s, root);
+        assert_eq!(s.thread_messages(a, &key).unwrap().len(), 3, "the reading view merges the copy");
+        assert_eq!(s.thread_message_ids(a, &key, Some("INBOX")).unwrap(), [root, reply]);
+        assert_eq!(s.thread_message_ids(a, &key, Some("Archive")).unwrap(), [copy]);
+        assert_eq!(s.thread_message_ids(a, &key, None).unwrap(), [root, reply, copy, sent]);
     }
 }

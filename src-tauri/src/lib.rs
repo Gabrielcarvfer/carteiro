@@ -1107,6 +1107,13 @@ fn download_offline_now(app: AppHandle, state: State<'_, AppState>) -> Res<()> {
     Ok(())
 }
 
+/// The messages an action on a whole conversation touches: every copy in
+/// `folder`, or in all folders when it's None.
+#[tauri::command]
+fn thread_ids(state: State<'_, AppState>, account_id: i64, thread_key: String, folder: Option<String>) -> Res<Vec<i64>> {
+    lock(&state)?.thread_message_ids(account_id, &thread_key, folder.as_deref()).map_err(err)
+}
+
 /// Lists older messages of a folder (the first sync lists the latest only).
 #[tauri::command]
 async fn load_older(state: State<'_, AppState>, account_id: i64, folder: String) -> Res<usize> {
@@ -1440,6 +1447,7 @@ pub fn run() {
             scanner_status,
             download_offline_now,
             load_older,
+            thread_ids,
             export_mail,
             open_link,
             save_attachment,
