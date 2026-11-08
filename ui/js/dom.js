@@ -74,13 +74,14 @@ export function ask(question, yes = "Delete", danger = true) {
 
 /// Like `ask`, with several answers: resolves the chosen key, or null.
 /// `extra` is shown under the answers (it may hold more of them, with inputs);
-/// `read(box)` collects them when an answer is picked.
-export function choose(question, options, extra = "", read = () => null) {
+/// `read(box)` collects them when an answer is picked; `intro` goes right
+/// under the question (what the answers are about).
+export function choose(question, options, extra = "", read = () => null, intro = "") {
   return new Promise((resolve) => {
     const box = document.createElement("div");
     box.className = "ask-backdrop";
     box.innerHTML = fmt(html`<div class="ask" role="alertdialog" aria-label="${question}">
-      <p>${question}</p>
+      <p>${question}</p>${intro}
       <div class="choices">${options.map(([k, l, danger]) => html`<button class="btn ${danger ? "danger" : ""}" data-ask="${k}">${l}</button>`)}</div>
       ${extra}
       <div class="choices"><button class="btn" data-ask="">Cancel</button></div>

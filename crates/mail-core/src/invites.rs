@@ -39,35 +39,57 @@ pub fn import(store: &mut Store, msg: i64, sender: &str, raw: &[u8], now: i64) -
     }
     let mut touched = Vec::new();
     for ics in calendar_parts(raw) {
-        let method = calendar_method(&ics);
-        // Replies and counter-proposals are other people's answers, not events.
-        if !matches!(method.as_str(), "" | "REQUEST" | "PUBLISH" | "CANCEL") {
-            continue;
-        }
-        let mut series: BTreeMap<String, Vec<Event>> = BTreeMap::new();
-        for e in parse_events(&ics) {
-            if !e.uid.is_empty() && e.uid.len() <= 512 && e.start != 0 {
-                series.entry(e.uid.clone()).or_default().push(e);
-            }
-        }
-        for (uid, events) in series {
-            let changed = if method == "CANCEL" {
-                match events.iter().find(|e| e.recurrence_id.is_some()) {
-                    Some(one) if !events.iter().any(|e| e.recurrence_id.is_none()) => store.cancel_invite(&uid, sender, one.recurrence_id)?,
-                    _ => store.cancel_invite(&uid, sender, None)?,
-                }
-            } else {
-                let sequence = events.iter().map(|e| e.sequence).max().unwrap_or(0);
-                let instances = crate::recur::expand_all(events, now - PAST, now + FUTURE, MAX_INSTANCES);
-                store.save_invite(&uid, sender, sequence, &instances)?
-            };
+        for uid in apply(store, sender, &ics, now, false)? {
             // The same invitation often comes twice (inline and as invite.ics).
-            if changed && !touched.contains(&uid) {
+            if !touched.contains(&uid) {
                 touched.push(uid);
             }
         }
     }
     store.mark_invites(msg, &touched)?;
+    Ok(touched)
+}
+
+/// A calendar file you chose to add from a message: like a mailed
+/// invitation, except that dates you removed from the series come back.
+/// Returns how many series it added or changed.
+pub fn import_ics(store: &mut Store, sender: &str, ics: &str, now: i64) -> Result<usize> {
+    let changed = apply(store, sender, ics, now, true)?;
+    if changed.is_empty() {
+        return Err(crate::Error::Other("Nothing was added: this event belongs to an invitation from someone else".into()));
+    }
+    Ok(changed.len())
+}
+
+/// Applies one calendar object; returns the series it changed.
+fn apply(store: &mut Store, sender: &str, ics: &str, now: i64, by_hand: bool) -> Result<Vec<String>> {
+    let method = calendar_method(ics);
+    let mut touched = Vec::new();
+    // Replies and counter-proposals are other people's answers, not events.
+    if !matches!(method.as_str(), "" | "REQUEST" | "PUBLISH" | "CANCEL") {
+        return Ok(touched);
+    }
+    let mut series: BTreeMap<String, Vec<Event>> = BTreeMap::new();
+    for e in parse_events(ics) {
+        if !e.uid.is_empty() && e.uid.len() <= 512 && e.start != 0 {
+            series.entry(e.uid.clone()).or_default().push(e);
+        }
+    }
+    for (uid, events) in series {
+        let changed = if method == "CANCEL" {
+            match events.iter().find(|e| e.recurrence_id.is_some()) {
+                Some(one) if !events.iter().any(|e| e.recurrence_id.is_none()) => store.cancel_invite(&uid, sender, one.recurrence_id)?,
+                _ => store.cancel_invite(&uid, sender, None)?,
+            }
+        } else {
+            let sequence = events.iter().map(|e| e.sequence).max().unwrap_or(0);
+            let instances = crate::recur::expand_all(events, now - PAST, now + FUTURE, MAX_INSTANCES);
+            store.save_invite(&uid, sender, sequence, &instances, by_hand)?
+        };
+        if changed {
+            touched.push(uid);
+        }
+    }
     Ok(touched)
 }
 
@@ -143,8 +165,13 @@ mod tests {
         assert_eq!(titles(&s).iter().map(|t| t.0.as_str()).collect::<Vec<_>>(), ["20261109", "20261123"]);
         s.remove_series_range(evs[0].id, None, None).unwrap();
         assert!(titles(&s).is_empty(), "the whole series");
+        // Adding the file by hand brings it back, removed dates included.
+        assert_eq!(import_ics(&mut s, "ana@example.org", &ics("REQUEST", &up4), now).unwrap(), 1);
+        assert_eq!(titles(&s).len(), 4);
+        assert!(import_ics(&mut s, "mallory@evil.example", &ics("REQUEST", &up4), now).is_err(), "not someone else's series");
         // Other people's replies are not events.
-        import(&mut s, 7, "bob@example.org", &mail(&ics("REPLY", SERIES), false), now).unwrap();
-        assert!(titles(&s).is_empty());
+        let reply = SERIES.replace("weekly-1", "weekly-2");
+        import(&mut s, 7, "bob@example.org", &mail(&ics("REPLY", &reply), false), now).unwrap();
+        assert_eq!(titles(&s).len(), 4);
     }
 }

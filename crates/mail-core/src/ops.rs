@@ -576,7 +576,9 @@ async fn save_sent_copy_inner(store: &Mutex<Store>, account: &Account, password:
 /// Saves attachment `index` of a message into `dir`, but only when the whole
 /// message scans clean, the file type isn't flagged as dangerous, and the
 /// attachment itself scans clean again. Never overwrites an existing file.
-pub async fn save_attachment(store: &Mutex<Store>, message_id: i64, index: usize, dir: &std::path::Path, scanner: &ScannerConfig) -> Result<std::path::PathBuf> {
+/// An attachment's name and contents, only once the message and the
+/// attachment itself have passed every check (ClamAV, dangerous types).
+async fn checked_attachment(store: &Mutex<Store>, message_id: i64, index: usize, scanner: &ScannerConfig) -> Result<(String, Vec<u8>)> {
     let raw = lock(store)?.raw(message_id)?.ok_or_else(|| Error::Other("The message isn't downloaded yet".into()))?;
     match scan::scan(scanner, &raw).await {
         Verdict::Clean => {}
@@ -590,6 +592,11 @@ pub async fn save_attachment(store: &Mutex<Store>, message_id: i64, index: usize
     if let Verdict::Infected { signature } = scan::scan(scanner, &bytes).await {
         return Err(Error::Other(format!("Blocked: malware detected ({signature})")));
     }
+    Ok((name, bytes))
+}
+
+pub async fn save_attachment(store: &Mutex<Store>, message_id: i64, index: usize, dir: &std::path::Path, scanner: &ScannerConfig) -> Result<std::path::PathBuf> {
+    let (name, bytes) = checked_attachment(store, message_id, index, scanner).await?;
     let safe = safe_file_name(&name);
     let (stem, ext) = match safe.rsplit_once('.') {
         Some((s, e)) if !s.is_empty() => (s.to_string(), format!(".{e}")),
@@ -611,6 +618,43 @@ pub async fn save_attachment(store: &Mutex<Store>, message_id: i64, index: usize
         }
     }
     Err(Error::Other("Too many files with that name".into()))
+}
+
+/// What a calendar attachment holds, for asking whether to add it.
+#[derive(Debug, Clone, Serialize)]
+pub struct IcsPreview {
+    /// REQUEST, PUBLISH, CANCEL… (empty when the file doesn't say).
+    pub method: String,
+    /// One entry per event or series (changed instances left out).
+    pub events: Vec<crate::ical::Event>,
+    /// Every series in it is already in the Invitations calendar.
+    pub in_calendar: bool,
+}
+
+async fn attachment_ics(store: &Mutex<Store>, message_id: i64, index: usize, scanner: &ScannerConfig) -> Result<String> {
+    let (_, bytes) = checked_attachment(store, message_id, index, scanner).await?;
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    if !text.contains("BEGIN:VCALENDAR") || crate::ical::parse_events(&text).is_empty() {
+        return Err(Error::Other("This isn't a calendar file Carteiro can read".into()));
+    }
+    Ok(text)
+}
+
+pub async fn preview_ics(store: &Mutex<Store>, message_id: i64, index: usize, scanner: &ScannerConfig) -> Result<IcsPreview> {
+    let text = attachment_ics(store, message_id, index, scanner).await?;
+    let events: Vec<_> = crate::ical::parse_events(&text).into_iter().filter(|e| e.recurrence_id.is_none()).collect();
+    let st = lock(store)?;
+    let in_calendar = events.iter().all(|e| !e.uid.is_empty() && st.invite_present(&e.uid).unwrap_or(false));
+    Ok(IcsPreview { method: crate::ical::calendar_method(&text), events, in_calendar })
+}
+
+/// Adds (or, for a cancellation, applies) a calendar attachment, at your
+/// request: dates you had removed from the series come back.
+pub async fn add_ics(store: &Mutex<Store>, message_id: i64, index: usize, scanner: &ScannerConfig) -> Result<usize> {
+    let text = attachment_ics(store, message_id, index, scanner).await?;
+    let mut st = lock(store)?;
+    let sender = st.message(message_id)?.map(|m| m.from.email).unwrap_or_default();
+    crate::invites::import_ics(&mut st, &sender, &text, crate::calendar::now())
 }
 
 // ---- offline copy -------------------------------------------------------------

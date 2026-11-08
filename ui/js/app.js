@@ -2,10 +2,10 @@
 // re-rendered on its own so typing in search or compose never loses focus.
 
 import { api, listen } from "./api.js";
-import { $, html, on, put, raw } from "./dom.js";
+import { $, choose, html, on, put, raw } from "./dom.js";
 import { addrList, avatar, bytes, folderLabel, icon, longDate, shortDate } from "./format.js";
 import { openCompose, openRules, openSettings, openSetup, ruleFromMessage } from "./dialogs.js";
-import { eventWhen, rsvpButtons, showCalendar } from "./calendar.js";
+import { eventWhen, rsvpButtons, showCalendar, showEventDay } from "./calendar.js";
 import { leaveContacts, showContacts, syncPhoneContacts } from "./contacts.js";
 
 export const S = {
@@ -336,6 +336,12 @@ async function openThread(ref, focusId = null) {
 async function act(kind, ids, dest, acct = S.viewAcct ?? S.account?.id) {
   if (acct == null || !ids.length) return;
   const id = acct;
+  // The open conversation shows the change at once, not after a refresh.
+  const field = { flag: ["flagged", true], unflag: ["flagged", false], read: ["seen", true], unread: ["seen", false] }[kind];
+  if (field && S.messages.some((m) => ids.includes(m.id))) {
+    for (const m of S.messages) if (ids.includes(m.id)) m[field[0]] = field[1];
+    renderReader();
+  }
   if (kind === "delete") await guard(api.remove(id, ids));
   else if (kind === "move") await guard(api.move(id, ids, dest));
   else if (kind === "read" || kind === "unread") await guard(api.setFlag(id, ids, "seen", kind === "read"));
@@ -746,10 +752,43 @@ on("click", "forward", (el) => {
 on("click", "make-rule", (el) => { S.menuFor = null; openRules(ruleFromMessage(msgById(el))); });
 on("click", "msg-delete", (el) => act("delete", [+el.dataset.id]));
 on("click", "msg-unread", (el) => act("unread", [+el.dataset.id]));
+const isCalendarFile = (a) => /\.(ics|ical|ifb|icalendar)$/i.test(a?.name ?? "") || /^(text\/calendar|application\/ics)$/i.test(a?.mime ?? "");
+
 on("click", "save-att", async (el) => {
-  const path = await guard(api.saveAttachment(+el.dataset.id, +el.dataset.index));
+  const id = +el.dataset.id, index = +el.dataset.index;
+  const a = S.messages.find((m) => m.id === id)?.attachments[index];
+  if (isCalendarFile(a) && !(await calendarAttachment(id, index))) return;
+  const path = await guard(api.saveAttachment(id, index));
   if (path) toast(`Saved to ${path}`);
 });
+
+// A calendar file: offer to add it (or show it, if it's already there).
+// Resolves true when the file should be saved to Downloads instead.
+async function calendarAttachment(id, index) {
+  let p;
+  try { p = await api.previewIcs(id, index); } catch (e) { toast(String(e)); return false; }
+  const n = p.events.length;
+  const list = html`<ul class="ics-list">${p.events.slice(0, 5).map((e) => html`<li><strong>${e.title || "(no title)"}</strong>
+    <span class="muted small">${eventWhen(e)}${e.recurring ? " · repeats" : ""}${e.location ? ` · ${e.location}` : ""}</span></li>`)}
+    ${n > 5 ? html`<li class="muted small">and ${n - 5} more</li>` : ""}</ul>`;
+  const cancel = p.method === "CANCEL";
+  const question = cancel ? "This file cancels:" : p.in_calendar ? "Already in your Invitations calendar:" : n === 1 ? "Add this event to your calendar?" : `Add these ${n} events to your calendar?`;
+  const options = [
+    ...(p.in_calendar && !cancel ? [["show", "Show in calendar"]] : []),
+    ["add", cancel ? "Remove it from my calendar" : p.in_calendar ? "Add again (restores removed dates)" : "Add to calendar"],
+    ["save", "Save the file to Downloads"],
+  ];
+  const r = await choose(question, options.map(([k, l]) => [k, l, k === "add" && cancel]), "", () => null, list);
+  if (!r) return false;
+  if (r.choice === "save") return true;
+  if (r.choice === "show") { closeDrawer(); await showEventDay(p.events[0]); return false; }
+  try {
+    await api.addIcs(id, index);
+    toast(cancel ? "Removed from your calendar" : "Added to your Invitations calendar. Nobody is told.");
+    if (!cancel) await showEventDay(p.events[0]);
+  } catch (e) { toast(String(e)); }
+  return false;
+}
 on("click", "plain", (el) => {
   const m = S.messages.find((x) => x.id === +el.dataset.id);
   const suspicious = (m?.warnings ?? []).some((w) => w.startsWith("A link"));

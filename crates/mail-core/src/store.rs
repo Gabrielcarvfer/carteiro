@@ -1272,7 +1272,9 @@ impl Store {
     /// an earlier version. Refused (false) when someone other than the
     /// original sender tries to change it, or when it's older than what's
     /// there (a delayed message). Your answer is kept.
-    pub fn save_invite(&mut self, uid: &str, sender: &str, sequence: i64, instances: &[crate::ical::Event]) -> Result<bool> {
+    /// `by_hand`: you added it yourself, so dates you removed come back and
+    /// an older version is accepted.
+    pub fn save_invite(&mut self, uid: &str, sender: &str, sequence: i64, instances: &[crate::ical::Event], by_hand: bool) -> Result<bool> {
         let cal = self.invitations_calendar()?;
         let sender = sender.to_lowercase();
         let existing: Option<(String, i64, String, String)> = self
@@ -1280,11 +1282,11 @@ impl Store {
             .query_row("SELECT sender, sequence, rsvp, removed FROM invite_series WHERE uid = ?1", [uid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
             .optional()?;
         if let Some((owner, seq, _, _)) = &existing {
-            if *owner != sender || *seq > sequence {
+            if *owner != sender || (*seq > sequence && !by_hand) {
                 return Ok(false);
             }
         }
-        let removed: Vec<(i64, i64)> = existing.as_ref().and_then(|e| serde_json::from_str(&e.3).ok()).unwrap_or_default();
+        let removed: Vec<(i64, i64)> = if by_hand { Vec::new() } else { existing.as_ref().and_then(|e| serde_json::from_str(&e.3).ok()).unwrap_or_default() };
         let rsvp = existing.map(|e| e.2).unwrap_or_default();
         let tx = self.conn.transaction()?;
         tx.execute("DELETE FROM events WHERE calendar_id = ?1 AND remote_id = ?2", params![cal, uid])?;
@@ -1297,8 +1299,8 @@ impl Store {
         }
         tx.execute(
             "INSERT INTO invite_series (uid, sender, sequence, rsvp) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(uid) DO UPDATE SET sequence = excluded.sequence",
-            params![uid, sender, sequence, rsvp],
+             ON CONFLICT(uid) DO UPDATE SET sequence = max(sequence, excluded.sequence), removed = CASE WHEN ?5 THEN '[]' ELSE removed END",
+            params![uid, sender, sequence, rsvp, by_hand],
         )?;
         tx.commit()?;
         Ok(true)
@@ -1360,6 +1362,12 @@ impl Store {
             self.conn.execute("UPDATE invite_series SET removed = ?1 WHERE uid = ?2", params![serde_json::to_string(&ranges)?, ev.remote_id])?;
         }
         Ok(n)
+    }
+
+    /// Whether a series is in the Invitations calendar right now.
+    pub fn invite_present(&self, uid: &str) -> Result<bool> {
+        let cal = self.invitations_calendar()?;
+        Ok(self.conn.query_row("SELECT EXISTS(SELECT 1 FROM events WHERE calendar_id = ?1 AND remote_id = ?2)", params![cal, uid], |r| r.get(0))?)
     }
 
     pub fn invites_checked(&self, msg: i64) -> Result<bool> {

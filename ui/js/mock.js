@@ -155,6 +155,8 @@ export async function mock(cmd, a) {
     case "set_rsvp": for (const t of Object.values(threads)) for (const m of t) for (const e of m.invites ?? []) if (e.id === a.eventId) e.rsvp = a.rsvp;
       for (const e of events) if (e.id === a.eventId) e.rsvp = a.rsvp;
       return null;
+    case "preview_ics": return { method: "REQUEST", in_calendar: false, events: [{ title: "Q3 planning", start: Math.floor(now / 86400) * 86400 + 2 * 86400 + 14 * 3600, end: Math.floor(now / 86400) * 86400 + 2 * 86400 + 15 * 3600, all_day: false, floating: false, recurring: true, tzid: "", location: "Room 4" }] };
+    case "add_ics": return 1;
     case "remove_series": { const ev = events.find((e) => e.id === a.eventId); const before = events.length;
       events = events.filter((e) => !(e.title === ev.title && e.calendar_id === ev.calendar_id && e.start >= (a.from ?? -Infinity) && e.start < (a.to ?? Infinity))); return before - events.length; }
     case "set_utc_offset": case "sync_phone_contacts": return null;

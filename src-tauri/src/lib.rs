@@ -1094,6 +1094,20 @@ async fn save_attachment(app: AppHandle, state: State<'_, AppState>, message_id:
     Ok(path.display().to_string())
 }
 
+/// What a calendar attachment holds (after the same checks as saving it).
+#[tauri::command]
+async fn preview_ics(state: State<'_, AppState>, message_id: i64, index: usize) -> Res<ops::IcsPreview> {
+    let s = state.inner();
+    ops::preview_ics(&s.store, message_id, index, &scanner(s)).await.map_err(err)
+}
+
+/// Adds a calendar attachment to the Invitations calendar, at your request.
+#[tauri::command]
+async fn add_ics(state: State<'_, AppState>, message_id: i64, index: usize) -> Res<usize> {
+    let s = state.inner();
+    ops::add_ics(&s.store, message_id, index, &scanner(s)).await.map_err(err)
+}
+
 /// Saves all mail of every account as .mbox files. Returns the folder.
 #[tauri::command]
 async fn export_mail(app: AppHandle, state: State<'_, AppState>, stamp_local: Option<String>) -> Res<(String, Vec<ops::ExportReport>)> {
@@ -1368,6 +1382,8 @@ pub fn run() {
             create_backup,
             sync_phone_contacts,
             set_rsvp,
+            preview_ics,
+            add_ics,
             remove_series,
             set_utc_offset,
             restore_upload,

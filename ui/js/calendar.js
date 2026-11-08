@@ -835,6 +835,14 @@ window.addEventListener("calendars-changed", () => {
 });
 
 /** Re-render after the preference changes. */
+/// Opens the calendar on the day of event `e`.
+export async function showEventDay(e) {
+  document.querySelector("[data-click=mode][data-mode=calendar]")?.click();
+  C.keepWeek = null;
+  C.anchor = startOfDay(evDate(e, "start"));
+  await load();
+}
+
 export function refreshCalendar() {
   if (!$("#calendar").hidden) load();
 }
