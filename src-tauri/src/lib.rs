@@ -273,10 +273,19 @@ fn list_unified(state: State<'_, AppState>, query: Option<String>) -> Res<Vec<Un
 }
 
 #[tauri::command]
-async fn open_thread(state: State<'_, AppState>, account_id: i64, thread_key: String) -> Res<Vec<MessageView>> {
+async fn open_thread(app: AppHandle, state: State<'_, AppState>, account_id: i64, thread_key: String) -> Res<Vec<MessageView>> {
     let s = state.inner();
     let (acct, pw) = credential(s, account_id).await?;
-    ops::open_thread(&s.store, &acct, &pw, &thread_key, &scanner(s)).await.map_err(err)
+    let views = ops::open_thread(&s.store, &acct, &pw, &thread_key, &scanner(s)).await.map_err(err)?;
+    calendar_changed(&app);
+    Ok(views)
+}
+
+/// Tells the interface when mailed invitations changed the calendar.
+fn calendar_changed(app: &AppHandle) {
+    if ops::take_invites_changed() {
+        let _ = app.emit("calendar-changed", ());
+    }
 }
 
 #[tauri::command]
@@ -491,6 +500,7 @@ async fn sync_all(app: &AppHandle) {
     }
     // Content search covers only mail the virus scanner found clean.
     let _ = ops::index_clean_text(&s.store, &scanner(&s)).await;
+    calendar_changed(app);
     s.syncing.store(false, Ordering::SeqCst);
     if !arrived.is_empty() && settings(&s).notify {
         let (title, body) = match arrived.as_slice() {
@@ -1342,6 +1352,7 @@ pub fn run() {
                         let _ = handle.emit("scanner-ready", ());
                         let s = handle.state::<AppState>();
                         let _ = ops::index_clean_text(&s.store, &crate::scanner(&s)).await;
+                        calendar_changed(&handle);
                     }
                     ready = now;
                     tokio::time::sleep(Duration::from_secs(2)).await;

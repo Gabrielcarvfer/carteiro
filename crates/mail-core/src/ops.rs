@@ -64,9 +64,19 @@ fn on_clean(store: &Mutex<Store>, id: i64, raw: &[u8]) -> Result<()> {
     let mut st = lock(store)?;
     st.set_text(id, true, &search_text(raw))?;
     if let Some(m) = st.message(id)? {
-        let _ = crate::invites::import(&mut st, id, &m.from.email, raw, crate::calendar::now());
+        if crate::invites::import(&mut st, id, &m.from.email, raw, crate::calendar::now()).is_ok_and(|t| !t.is_empty()) {
+            INVITES_CHANGED.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
     }
     Ok(())
+}
+
+static INVITES_CHANGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether invitations changed the calendar since the last call (so an open
+/// calendar can refresh).
+pub fn take_invites_changed() -> bool {
+    INVITES_CHANGED.swap(false, std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Leading levels of `refs` (parent first) not among `present`.
@@ -1030,5 +1040,31 @@ mod file_name_tests {
         let long = format!("{}.pdf", "é".repeat(300));
         let got = safe_file_name(&long);
         assert!(got.len() <= 200 && got.ends_with(".pdf"), "{} bytes", got.len());
+    }
+
+    #[test]
+    fn clean_invitations_reach_the_calendar_and_say_so() {
+        use super::*;
+        let store = std::sync::Mutex::new(Store::open_in_memory().unwrap());
+        let ep = crate::Endpoint { host: "h".into(), port: 993, security: crate::Security::Tls, allow_insecure: false };
+        let mut a = Account {
+            id: 0, name: "Me".into(), email: "me@x.org".into(), username: "me".into(), incoming_protocol: crate::Protocol::Imap,
+            incoming: ep.clone(), smtp: ep, smtp_username: None, signature: String::new(), auth: crate::AuthMethod::Password,
+        };
+        let raw = b"From: Ana <ana@x.org>\r\nSubject: Invitation\r\nMessage-ID: <i1@x.org>\r\nContent-Type: text/calendar; method=REQUEST\r\n\r\nBEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nUID:c-1\r\nSUMMARY:Lunch\r\nDTSTART:20991109T120000Z\r\nDTEND:20991109T130000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let id = {
+            let st = store.lock().unwrap();
+            st.add_account(&mut a).unwrap();
+            st.insert_message(&crate::store::NewMessage { account_id: a.id, folder: "INBOX".into(), uid: Some(1), pop_uidl: None, meta: parse_meta(raw), seen: false, flagged: false, size: raw.len() as u64, raw: None }).unwrap()
+        };
+        take_invites_changed();
+        on_clean(&store, id, raw).unwrap();
+        assert!(take_invites_changed(), "the open calendar is told");
+        assert!(!take_invites_changed(), "once");
+        let st = store.lock().unwrap();
+        assert_eq!(st.invites_of(id, 0).unwrap()[0].event.title, "Lunch");
+        drop(st);
+        on_clean(&store, id, raw).unwrap();
+        assert!(!take_invites_changed(), "nothing new the second time");
     }
 }

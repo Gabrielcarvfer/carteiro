@@ -5,7 +5,7 @@ import { api, listen } from "./api.js";
 import { $, choose, html, on, put, raw } from "./dom.js";
 import { addrList, avatar, bytes, folderLabel, icon, longDate, shortDate } from "./format.js";
 import { openCompose, openRules, openSettings, openSetup, ruleFromMessage } from "./dialogs.js";
-import { eventWhen, rsvpButtons, showCalendar, showEventDay } from "./calendar.js";
+import { eventWhen, refreshCalendar, rsvpButtons, showCalendar, showEventDay } from "./calendar.js";
 import { leaveContacts, showContacts, syncPhoneContacts } from "./contacts.js";
 
 export const S = {
@@ -837,6 +837,8 @@ threadsEl.addEventListener("touchend", () => {
 });
 
 // Background sync (tray mode) finished: refresh what's on screen.
+// Invitations arriving by mail show up in an open calendar right away.
+listen("calendar-changed", () => refreshCalendar());
 listen("mail-synced", () => { refreshFolders(); refreshThreads(); syncPhoneContacts(); });
 // Android: the shell asks the page to open the browser (sign-in).
 listen("open-url", (url) => guard(api.openLink(url)));

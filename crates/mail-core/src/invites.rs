@@ -85,7 +85,10 @@ fn apply(store: &mut Store, sender: &str, ics: &str, now: i64, by_hand: bool, ac
         } else {
             let sequence = events.iter().map(|e| e.sequence).max().unwrap_or(0);
             let organizer = events.iter().map(|e| e.organizer.clone()).find(|o| !o.is_empty()).unwrap_or_default();
-            let instances = crate::recur::expand_all(events, now - PAST, now + FUTURE, MAX_INSTANCES);
+            // Laid out from the past few months to two years after the later
+            // of today and the series' start (a far-off event still counts).
+            let first = events.iter().map(|e| e.start).min().unwrap_or(now);
+            let instances = crate::recur::expand_all(events, now.min(first) - PAST, now.max(first) + FUTURE, MAX_INSTANCES);
             store.save_invite(&uid, sender, sequence, &instances, by_hand, &organizer, account)?
         };
         if changed {
