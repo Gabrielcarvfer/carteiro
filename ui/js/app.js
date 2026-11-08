@@ -15,6 +15,9 @@ export const S = {
   openThreads: {}, children: {}, focusMsg: null,
   // Conversations picked for a group action (press and hold, or Ctrl-click).
   picked: new Set(),
+  // Single messages picked inside a conversation (ref -> message ids), when
+  // not all of it is picked.
+  pickedMsgs: new Map(),
   // Account and folders of the conversation being read (differs from
   // S.account in the unified inbox).
   viewAcct: null, viewFolders: null,
@@ -58,7 +61,7 @@ const closers = {
   compose: () => put("#compose", ""),
   contact: () => document.dispatchEvent(new Event("contact-back")),
   jumper: () => document.dispatchEvent(new Event("jumper-back")),
-  picks: () => { S.picked.clear(); renderList(); },
+  picks: () => { clearPicks(); renderList(); },
 };
 export function syncLayer(name, open) {
   const i = layers.lastIndexOf(name);
@@ -431,7 +434,7 @@ function renderList() {
   put("#mobile-title", title);
   put("#threads", S.threads.length ? S.threads.map((t) => html`
     <div class="item ${t.ref === S.selected ? "sel" : ""} ${t.unread ? "unread" : ""} ${S.picked.has(t.ref) ? "picked" : ""}" role="option"
-      aria-selected="${S.picked.size ? S.picked.has(t.ref) : t.ref === S.selected}" draggable="${FINE_POINTER && !S.picked.size}"
+      aria-selected="${picking() ? S.picked.has(t.ref) : t.ref === S.selected}" draggable="${FINE_POINTER && !picking()}"
       data-click="thread" data-dragstart="threaddrag" data-key="${t.ref}" data-latest="${t.latest_id}">
       <div class="tray" aria-hidden="true">${trayHtml(t)}</div>
       <div class="pick-hint" aria-hidden="true">${icon("check", 20)}<span>Select</span></div>
@@ -439,7 +442,7 @@ function renderList() {
       ${t.count > 1
         ? html`<button class="chevron ${S.openThreads[t.ref] ? "open" : ""}" title="Show messages" aria-expanded="${!!S.openThreads[t.ref]}" data-click="thread-expand">${icon("chevron", 14)}</button>`
         : html`<span class="chevron-gap"></span>`}
-      ${S.picked.size ? html`<span class="pick-box" role="checkbox" aria-checked="${S.picked.has(t.ref)}">${S.picked.has(t.ref) ? icon("check", 16) : ""}</span>` : ""}
+      ${picking() ? pickBox(S.picked.has(t.ref), S.pickedMsgs.has(t.ref)) : ""}
       ${avatar(t.participants[0] ?? "?")}
       <div class="main">
         <div class="row"><span class="who ellipsis">${t.participants.join(", ")}</span>
@@ -471,15 +474,17 @@ const FINE_POINTER = matchMedia("(pointer: fine)").matches;
 // ---- picking several conversations -------------------------------------------------
 
 function renderPickBar() {
-  S.picked = new Set([...S.picked].filter((r) => S.threads.some((t) => t.ref === r)));
+  const shown = (r) => S.threads.some((t) => t.ref === r);
+  S.picked = new Set([...S.picked].filter(shown));
+  for (const r of S.pickedMsgs.keys()) if (!shown(r)) S.pickedMsgs.delete(r);
   const bar = $("#pick-bar");
-  bar.hidden = !S.picked.size;
-  syncLayer("picks", S.picked.size > 0);
-  if (!S.picked.size) return put(bar, "");
+  bar.hidden = !picking();
+  syncLayer("picks", picking());
+  if (!picking()) return put(bar, "");
   const folders = (S.viewFolders ?? S.folders).filter((f) => f.special !== "outbox" && f.name !== S.folder);
   put(bar, html`
     <button class="icon-btn" title="Stop picking" aria-label="Stop picking" data-click="pick-clear">${icon("close", 18)}</button>
-    <span class="pick-count">${S.picked.size} selected</span>
+    <span class="pick-count">${pickLabel()}</span>
     <span class="spacer"></span>
     <button class="icon-btn" title="Mark as read" data-click="pick-act" data-kind="read">${icon("read", 18)}</button>
     <button class="icon-btn" title="Mark unread" data-click="pick-act" data-kind="unread">${icon("compose", 18)}</button>
@@ -489,18 +494,65 @@ function renderPickBar() {
       <option value="">Move…</option>${folders.map((f) => html`<option value="${f.name}">${folderLabel(f)}</option>`)}</select>`}`);
 }
 
-function togglePick(ref) {
-  if (S.picked.has(ref)) S.picked.delete(ref); else S.picked.add(ref);
+const picking = () => S.picked.size > 0 || S.pickedMsgs.size > 0;
+function clearPicks() { S.picked.clear(); S.pickedMsgs.clear(); }
+// A check box: ticked, partly ticked (some messages of the conversation), or empty.
+const pickBox = (on, partly = false) => html`<span class="pick-box ${on ? "on" : partly ? "partly" : ""}" role="checkbox" aria-checked="${on ? "true" : partly ? "mixed" : "false"}">${on ? icon("check", 16) : partly ? html`<span class="dash"></span>` : ""}</span>`;
+function pickLabel() {
+  const convs = S.picked.size, msgs = [...S.pickedMsgs.values()].reduce((n, s) => n + s.size, 0);
+  const m = `${msgs} message${msgs > 1 ? "s" : ""}`;
+  return convs && msgs ? `${convs} + ${m}` : convs ? `${convs} selected` : m;
+}
+
+// Picking a conversation picks all of it; one with several messages opens in
+// the list so each message shows its own (ticked) box.
+async function togglePick(ref) {
+  if (S.picked.has(ref) || S.pickedMsgs.has(ref)) {
+    S.picked.delete(ref);
+    S.pickedMsgs.delete(ref);
+    return renderList();
+  }
+  S.picked.add(ref);
+  const t = S.threads.find((x) => x.ref === ref);
+  if (t?.count > 1 && !S.openThreads[ref]) {
+    S.openThreads[ref] = true;
+    if (!S.children[ref]) {
+      renderList();
+      S.children[ref] = (await guard(api.openThread(...splitRef(ref)))) ?? [];
+    }
+  }
+  renderList();
+}
+
+// Unticking one message of a picked conversation keeps the others picked.
+function toggleMsgPick(ref, id) {
+  const all = (S.children[ref] ?? []).map((m) => m.id);
+  let set = S.picked.has(ref) ? new Set(all) : new Set(S.pickedMsgs.get(ref) ?? []);
+  S.picked.delete(ref);
+  if (set.has(id)) set.delete(id); else set.add(id);
+  if (all.length && all.every((x) => set.has(x))) { S.pickedMsgs.delete(ref); S.picked.add(ref); }
+  else if (set.size) S.pickedMsgs.set(ref, set);
+  else S.pickedMsgs.delete(ref);
   renderList();
 }
 
 async function actOnPicked(kind) {
   const refs = [...S.picked];
-  S.picked.clear();
+  const msgs = [...S.pickedMsgs];
+  clearPicks();
   patchThreads(refs, kind);
   for (const r of refs) await threadAct(r, kind);
+  // Single messages: just those (the copies shown).
+  for (const [ref, ids] of msgs) {
+    const [acct] = splitRef(ref);
+    if (kind.startsWith("move-to:")) await act("move", [...ids], kind.slice(8), acct);
+    else await act(kind, [...ids], undefined, acct);
+    delete S.children[ref];
+  }
+  for (const r of refs) delete S.children[r];
+  if (msgs.length) await refreshThreads();
 }
-on("click", "pick-clear", () => { S.picked.clear(); renderList(); });
+on("click", "pick-clear", () => { clearPicks(); renderList(); });
 on("click", "pick-act", (el) => actOnPicked(el.dataset.kind));
 on("change", "pick-move", (el) => el.value && actOnPicked(`move-to:${el.value}`));
 
@@ -536,7 +588,10 @@ function trayHtml(t) {
 
 // A tap right after a hold or swipe belongs to that gesture, not a new one.
 let press = null, quietUntil = 0, openTray = null;
-const quiet = () => { quietUntil = Date.now() + 250; };
+// After a hold or swipe, taps are ignored until the next touch begins (the
+// browser's tap on lifting the finger can come late, and its touchend can be
+// lost when the row under the finger is redrawn).
+const quiet = () => { quietUntil = Infinity; };
 const HOLD_MS = 450;
 const rowOf = (target) => target.closest?.("#threads .item");
 const bodyOf = (item) => item.querySelector(".item-body");
@@ -555,7 +610,7 @@ function startPress(item, x, y, touch) {
     timer: setTimeout(() => {
       if (!press || press.axis) return;
       press.held = true;
-      quiet();
+      if (!press.touch) quietUntil = Date.now() + 400; else quiet();
       closeTray();
       togglePick(item.dataset.key);
       navigator.vibrate?.(15);
@@ -569,7 +624,7 @@ function movePress(x, y) {
   const dx = x - press.x, dy = y - press.y;
   if (!press.axis && Math.hypot(dx, dy) > 10) {
     clearTimeout(press.timer);
-    press.axis = press.touch && Math.abs(dx) > Math.abs(dy) && !S.picked.size ? "x" : "y";
+    press.axis = press.touch && Math.abs(dx) > Math.abs(dy) && !picking() ? "x" : "y";
     if (press.axis === "x") press.item.classList.add("swiping");
   }
   if (press.axis !== "x") return false;
@@ -588,7 +643,8 @@ function endPress() {
   clearTimeout(press.timer);
   const p = press;
   press = null;
-  if (p.held) return quiet(); // the tap the browser makes on lifting the finger
+  // The tap the browser makes on lifting the finger isn't a new tap.
+  if (p.held) return p.touch ? quiet() : void (quietUntil = Date.now() + 400);
   if (p.axis !== "x") return;
   quiet();
   p.item.classList.remove("swiping", "pick-armed");
@@ -615,6 +671,7 @@ function endPress() {
 // the list, and a removed element still gets its touch, but nothing above it does.
 let lastTouch = 0;
 document.addEventListener("touchstart", (e) => {
+  quietUntil = 0; // a new touch: taps count again
   const item = rowOf(e.target);
   if (!item || e.touches.length > 1 || e.target.closest("select, .tray-btn")) return;
   startPress(item, e.touches[0].clientX, e.touches[0].clientY, true);
@@ -645,7 +702,8 @@ document.addEventListener("mouseup", () => { if (press && !press.touch) endPress
 document.addEventListener("contextmenu", (e) => { if (rowOf(e.target)) e.preventDefault(); });
 // A hold or a swipe isn't also a tap; a tap elsewhere closes an open tray.
 document.addEventListener("click", (e) => {
-  if (Date.now() < quietUntil && e.target.closest?.("#threads")) { e.stopPropagation(); e.preventDefault(); }
+  // Wherever it lands: the selection bar may have appeared under the finger.
+  if (Date.now() < quietUntil) { e.stopPropagation(); e.preventDefault(); }
   else if (openTray && !e.target.closest?.(".tray-btn")) {
     const inside = e.target.closest?.("#threads .item") === openTray;
     closeTray();
@@ -675,12 +733,15 @@ function threadChildren(key, folder) {
   const msgs = S.children[key];
   if (!msgs) return html`<div class="child muted">Loading…</div>`;
   return [...msgs].reverse().map((m) => html`
-    <div class="child ${m.id === S.focusMsg && key === S.selected ? "sel" : ""} ${m.seen ? "" : "unread"}"
+    <div class="child ${m.id === S.focusMsg && key === S.selected ? "sel" : ""} ${m.seen ? "" : "unread"} ${picking() ? "picking" : ""}"
       data-click="thread-msg" data-key="${key}" data-id="${m.id}">
+      ${picking() ? pickBox(S.picked.has(key) || !!S.pickedMsgs.get(key)?.has(m.id)) : ""}
+      <div class="child-main">
       <div class="row"><span class="who ellipsis">${m.from.name || m.from.email}</span>
         ${m.folder !== folder ? html`<span class="folder-tag">${folderName(m.folder)}</span>` : ""}
         <span class="date">${shortDate(m.date)}</span></div>
       <div class="snippet ellipsis">${m.snippet}</div>
+      </div>
     </div>`);
 }
 
@@ -961,7 +1022,7 @@ on("dragstart", "threaddrag", (el, e) => e.dataTransfer.setData("application/x-c
 on("click", "thread", (el, e) => {
   if (e.target.closest("[data-kind], [data-click=thread-expand]")) return;
   // While picking, a tap adds or removes; Ctrl/Cmd-click picks on desktop.
-  if (S.picked.size || e.ctrlKey || e.metaKey) return togglePick(el.dataset.key);
+  if (picking() || e.ctrlKey || e.metaKey) return togglePick(el.dataset.key);
   openThread(el.dataset.key);
 });
 on("click", "thread-expand", async (el, e) => {
@@ -974,7 +1035,10 @@ on("click", "thread-expand", async (el, e) => {
     renderList();
   }
 });
-on("click", "thread-msg", (el) => openThread(el.dataset.key, +el.dataset.id));
+on("click", "thread-msg", (el, e) => {
+  if (picking() || e.ctrlKey || e.metaKey) return toggleMsgPick(el.dataset.key, +el.dataset.id);
+  openThread(el.dataset.key, +el.dataset.id);
+});
 on("click", "thread-act", (el, e) => {
   e.stopPropagation();
   threadAct(el.closest("[data-key]").dataset.key, el.dataset.kind);

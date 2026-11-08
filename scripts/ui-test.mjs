@@ -94,6 +94,11 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 860, false], ["phone", 39
   const unreadOf = (text) => js(`[...document.querySelectorAll("#threads .item")].find((x) => x.textContent.includes(${JSON.stringify(text)}))?.classList.contains("unread")`);
   const rect = (text) => js(`(() => { const r = [...document.querySelectorAll("#threads .item")].find((x) => x.textContent.includes(${JSON.stringify(text)})).getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2, r.width]; })()`);
   const touch = (type, x, y) => send("Input.dispatchTouchEvent", { type, touchPoints: type === "touchEnd" ? [] : [{ x, y }] });
+  // A finger tap on the element matching `sel` (and containing `text`).
+  const tap = async (sel, text = "", index = 0) => {
+    const [x, y] = await js(`(() => { const el = [...document.querySelectorAll(${JSON.stringify(sel)})].filter((x) => x.textContent.includes(${JSON.stringify(text)}))[${index}]; if (!el) throw new Error("nothing to tap: ${sel.replace(/"/g, "'")} ${text}"); const r = el.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()`);
+    await touch("touchStart", x, y); await sleep(40); await touch("touchEnd"); await sleep(250);
+  };
   await test("read and unread show at once, in the list and the conversation", async () => {
     expect(await unreadOf("Build failed"), "test message should start unread");
     await js(`[...document.querySelectorAll("#threads .item")].find((x) => x.textContent.includes("Build failed")).querySelector("[data-kind=read]").click()`);
@@ -113,12 +118,12 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 860, false], ["phone", 39
       await touch("touchEnd"); await sleep(400);
       expect(await js(`document.querySelectorAll("#threads .item.picked").length`) === 1, `hold didn't pick (while held: ${during})`);
       expect(await js(`!document.querySelector("#pick-bar").hidden`), "no selection bar");
-      await clickText(".item", "Pedro Alves"); await sleep(100);
-      await clickText(".item", "Lisbon Air"); await sleep(100);
+      await tap("#threads .item", "Pedro Alves");
+      await tap("#threads .item", "Lisbon Air");
       expect(await js(`document.querySelector(".pick-count").textContent`) === "3 selected", "taps didn't add");
-      await clickText(".item", "Lisbon Air"); await sleep(100);
+      await tap("#threads .item", "Lisbon Air");
       expect(await js(`document.querySelector(".pick-count").textContent`) === "2 selected", "tap didn't remove");
-      await click("#pick-bar [data-kind=delete]"); await sleep(600);
+      await tap("#pick-bar [data-kind=delete]"); await sleep(400);
       expect(await js(`document.querySelectorAll("#threads .item").length`) === before - 2, "not deleted together");
       expect(await js(`document.querySelector("#pick-bar").hidden`), "bar stayed");
     });
@@ -138,14 +143,14 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 860, false], ["phone", 39
       expect(tray.join("|") === "Unread|Flag|Archive|Delete", `tray: ${tray}`);
       expect(/translateX\(-/.test(await js(`document.querySelector("#threads .item.tray-open .item-body").style.transform`)), "row didn't slide sideways");
       expect(await js(`!document.querySelector("#reader .pane h1")`), "a swipe opened the conversation");
-      await click("#threads .item.tray-open .tray-btn[data-kind=unread]"); await sleep(300);
+      await tap("#threads .item.tray-open .tray-btn[data-kind=unread]");
       expect(await unreadOf("Mum"), "Unread button didn't act");
       expect(await js(`!document.querySelector("#threads .item.tray-open")`), "tray stayed open");
     });
     await test("a tap elsewhere closes the tray without opening anything", async () => {
       const [x, y, width] = await rect("Mum");
       await swipe(x, y, -width * 0.5);
-      await clickText(".item", "Mum"); await sleep(300);
+      await tap("#threads .item", "Mum");
       expect(await js(`!document.querySelector("#threads .item.tray-open")`), "tray stayed open");
       expect(await js(`!document.querySelector("#reader .pane h1")`), "the tap opened the conversation");
     });
@@ -154,10 +159,23 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 860, false], ["phone", 39
       await swipe(x, y, width * 0.4);
       expect(await js(`document.querySelectorAll("#threads .item.picked").length`) === 1, "swipe right didn't pick");
       expect(await js(`document.querySelectorAll("#threads .pick-box").length`) === await js(`document.querySelectorAll("#threads .item").length`), "no check box on every row");
-      await clickText(".item", "Mum"); await sleep(100);
+      await tap("#threads .item", "Mum");
       expect(await js(`document.querySelector(".pick-count").textContent`) === "2 selected", "tap didn't add");
-      await click("[data-click=pick-clear]"); await sleep(100);
+      await tap("[data-click=pick-clear]");
       expect(await js(`!document.querySelector("#threads .pick-box")`), "check boxes stayed");
+    });
+    await test("picking a conversation ticks each of its messages; untick one", async () => {
+      await page(w, h, mobile);
+      const [x, y] = await rect("Q3 planning");
+      await touch("touchStart", x, y); await sleep(700); await touch("touchEnd"); await sleep(600);
+      const boxes = () => js(`[...document.querySelectorAll("#threads .child .pick-box")].map((b) => b.getAttribute("aria-checked"))`);
+      expect((await boxes()).join() === "true,true,true", `children: ${await boxes()}`);
+      await tap("#threads .child", "", 1);
+      expect((await boxes()).join() === "true,false,true", `after untick: ${await boxes()}`);
+      expect(await js(`document.querySelector("#threads .item.sel, #threads .item [aria-checked=mixed]") !== null`), "conversation not shown as partly picked");
+      expect(await js(`document.querySelector(".pick-count").textContent`) === "2 messages", await js(`document.querySelector(".pick-count").textContent`));
+      await tap("#threads .child", "", 1);
+      expect(await js(`document.querySelector(".pick-count").textContent`) === "1 selected", "re-ticking didn't make it whole again");
     });
   } else {
     await test("Ctrl-click picks several; flag them together", async () => {

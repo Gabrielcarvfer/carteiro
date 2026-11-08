@@ -499,13 +499,19 @@ h3.sect { font-size: 15px; margin: 18px 0 4px; }
 .rsvp-row { display: inline-flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 
 /* picking several conversations */
-.pick-bar { display: flex; align-items: center; gap: 4px; padding: 6px 8px; background: var(--selected); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 3; }
-.pick-bar .pick-count { font-weight: 600; margin-left: 4px; }
+/* Laid over the top of the list, so the rows don't move under the finger. */
+.list { position: relative; }
+.pick-bar { display: flex; align-items: center; gap: 4px; padding: 6px 8px; min-height: 48px; box-sizing: border-box; background: linear-gradient(var(--selected), var(--selected)), var(--surface); border-bottom: 1px solid var(--border); position: absolute; top: 0; left: 0; right: 0; z-index: 5; }
+.pick-bar .pick-count { font-weight: 600; margin-left: 4px; white-space: nowrap; }
 .pick-bar .spacer { flex: 1; }
 .pick-bar select.move { max-width: 120px; }
 /* Outlook-style check boxes while picking */
 .pick-box { flex: none; align-self: center; width: 22px; height: 22px; border: 2px solid var(--text-2); border-radius: 4px; display: flex; align-items: center; justify-content: center; color: #fff; box-sizing: border-box; }
-.item.picked .pick-box { background: var(--accent); border-color: var(--accent); }
+.pick-box.on { background: var(--accent); border-color: var(--accent); }
+.pick-box.partly { border-color: var(--accent); }
+.pick-box .dash { width: 10px; height: 2px; background: var(--accent); border-radius: 1px; }
+.child.picking { display: flex; gap: 12px; align-items: center; padding-left: 44px; }
+.child-main { flex: 1; min-width: 0; }
 #threads .item { -webkit-touch-callout: none; user-select: none; }
 /* swiping: left reveals the tray at the right, right shows "Select" at the left */
 .item.swiping .item-body { transition: none; }
