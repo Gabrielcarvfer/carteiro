@@ -1,0 +1,203 @@
+// Contacts: your own (created or imported here) and synced address books
+// (Google, Microsoft, CardDAV). A list beside the details on desktop; list,
+// then details, on phones.
+
+import { api } from "./api.js";
+import { $, html, on, put } from "./dom.js";
+import { avatar, icon } from "./format.js";
+import { syncLayer, toast } from "./app.js";
+import { openCompose } from "./dialogs.js";
+
+const K = { query: "", list: [], sources: [], selected: null };
+
+/** Leaving the section closes the open contact. */
+export function leaveContacts() {
+  if (K.selected) { K.selected = null; render(); }
+}
+
+export async function showContacts() {
+  await load();
+  sync();
+}
+
+async function load() {
+  [K.list, K.sources] = await Promise.all([api.listContacts(K.query).catch(() => []), api.contactSources().catch(() => [])]);
+  render();
+}
+
+async function sync() {
+  const errors = await api.syncContacts().catch((e) => [String(e)]);
+  if (errors?.length) toast(errors[0]);
+  await load();
+}
+
+const sourceName = (c) => K.sources.find((s) => s.id === c.source_id)?.name ?? "";
+
+function render() {
+  const groups = [];
+  for (const c of K.list) {
+    const letter = (c.name[0] ?? "#").toLocaleUpperCase();
+    const g = groups[groups.length - 1];
+    if (g && g[0] === letter) g[1].push(c);
+    else groups.push([letter, [c]]);
+  }
+  const sel = K.list.find((c) => c.id === K.selected);
+  put("#contacts", html`
+    <div class="ct-list">
+      <header class="ct-bar">
+        <h2>Contacts</h2>
+        <span class="spacer"></span>
+        <button class="icon-btn" title="Sync address books" data-click="ct-sync">${icon("sync")}</button>
+        <button class="icon-btn" title="Address books" data-click="ct-books">${icon("calendar")}</button>
+        <button class="btn" data-click="ct-import">Import</button>
+        <button class="btn" data-click="ct-export">Export</button>
+        <button class="btn primary" data-click="ct-new">${icon("plus", 15)} New</button>
+        <input type="file" name="ct-file" accept=".vcf,.vcard,.csv,.ldif,.ldi,text/vcard,text/csv" hidden data-change="ct-file" />
+      </header>
+      <input class="ct-search" type="search" placeholder="Search contacts" aria-label="Search contacts" data-input="ct-search" value="${K.query}" />
+      <div class="ct-items">
+        ${K.list.length ? groups.map(([l, cs]) => html`<h3 class="ct-letter">${l}</h3>${cs.map((c) => html`
+          <button class="ct-item ${c.id === K.selected ? "on" : ""}" data-click="ct-open" data-id="${c.id}">
+            ${avatar(c.name, 34)}<span class="who"><strong>${c.name}</strong><span class="muted small">${c.emails[0] ?? c.phones[0] ?? ""}</span></span>
+          </button>`)}`)
+        : html`<p class="muted empty">${K.query ? `No contacts match "${K.query}".` : html`No contacts yet. <button class="linkish" data-click="ct-import">Import</button> a vCard, CSV or LDIF file from Gmail, Outlook or Thunderbird, or add an address book.`}</p>`}
+      </div>
+    </div>
+    <div class="ct-detail">${sel ? detail(sel) : html`<div class="placeholder muted">${icon("person", 48)}<p>Select a contact</p></div>`}</div>`);
+  $("#contacts").classList.toggle("has-sel", !!sel);
+  syncLayer("contact", !!sel);
+}
+document.addEventListener("contact-back", () => { K.selected = null; render(); });
+
+function detail(c) {
+  return html`<div class="pane">
+    <header class="toolbar">
+      <button class="icon-btn show-narrow" aria-label="Back" data-click="ct-back">${icon("back", 22)}</button>
+      <span class="spacer"></span>
+      ${c.read_only ? "" : html`<button class="btn" data-click="ct-edit">Edit</button><button class="btn danger" data-click="ct-delete">Delete</button>`}
+    </header>
+    <div class="ct-card">
+      ${avatar(c.name, 64)}
+      <h1>${c.name}</h1>
+      ${c.organization ? html`<p class="muted">${c.organization}</p>` : ""}
+      ${c.emails.map((e) => html`<p><button class="linkish" data-click="ct-mail" data-to="${e}">${icon("compose", 14)} ${e}</button></p>`)}
+      ${c.phones.map((p) => html`<p>${p}</p>`)}
+      ${c.notes ? html`<pre class="text">${c.notes}</pre>` : ""}
+      <p class="muted small">${c.read_only ? `From ${sourceName(c)} (synced: change it there)` : "On this device"}</p>
+    </div>
+  </div>`;
+}
+
+function editor(c) {
+  put("#modal", html`
+    <div class="modal-backdrop" data-click="modal-backdrop">
+      <div class="modal" role="dialog" aria-label="Contact">
+        <header>${c.id ? "Edit contact" : "New contact"}<button class="icon-btn" aria-label="Close" data-click="modal-close">${icon("close")}</button></header>
+        <div class="content form">
+          <label class="stack"><span>Name</span><input name="name" value="${c.name ?? ""}" /></label>
+          <label class="stack"><span>Email addresses (one per line)</span><textarea name="emails" rows="2">${(c.emails ?? []).join("\n")}</textarea></label>
+          <label class="stack"><span>Phone numbers (one per line)</span><textarea name="phones" rows="2">${(c.phones ?? []).join("\n")}</textarea></label>
+          <label class="stack"><span>Organization</span><input name="organization" value="${c.organization ?? ""}" /></label>
+          <label class="stack"><span>Notes</span><textarea name="notes" rows="3">${c.notes ?? ""}</textarea></label>
+          <div class="error" hidden></div>
+        </div>
+        <footer><span class="spacer"></span><button class="btn" data-click="modal-close">Cancel</button><button class="btn primary" data-click="ct-save" data-id="${c.id ?? ""}">Save</button></footer>
+      </div>
+    </div>`);
+  $("#modal [name=name]").focus();
+}
+
+function books() {
+  put("#modal", html`
+    <div class="modal-backdrop" data-click="modal-backdrop">
+      <div class="modal" role="dialog" aria-label="Address books">
+        <header>Address books<button class="icon-btn" aria-label="Close" data-click="modal-close">${icon("close")}</button></header>
+        <div class="content form">
+          ${K.sources.map((s) => html`<div class="rule"><div class="rule-main"><div class="rule-name">${s.name}</div>
+            <div class="muted small">${{ local: "On this device", carddav: "CardDAV", google: "Google", microsoft: "Microsoft 365 / Outlook" }[s.kind] ?? s.kind}${s.url ? ` · ${s.url}` : ""}</div></div>
+            ${s.kind === "carddav" ? html`<button class="btn danger" data-click="ct-book-remove" data-id="${s.id}">Remove</button>` : ""}</div>`)}
+          <p class="muted small">Google and Microsoft accounts bring their contacts automatically. Add any other CardDAV address book (Fastmail, iCloud, Nextcloud, mailbox.org…):</p>
+          <label class="stack"><span>Server address</span><input name="url" placeholder="https://carddav.example.com/" autocapitalize="off" /></label>
+          <label class="stack"><span>User name</span><input name="username" autocapitalize="off" /></label>
+          <label class="stack"><span>Password (an app password where the service offers one)</span><input name="password" type="password" /></label>
+          <label class="stack"><span>Name</span><input name="bookname" placeholder="Work contacts" /></label>
+          <div class="error" hidden></div>
+        </div>
+        <footer><span class="spacer"></span><button class="btn primary" data-click="ct-book-add">Add address book</button></footer>
+      </div>
+    </div>`);
+}
+
+const lines = (v) => v.split(/[\n,;]+/).map((s) => s.trim()).filter(Boolean);
+const fail = (msg) => { const e = $("#modal .error"); e.textContent = String(msg); e.hidden = false; };
+
+let searchTimer;
+on("input", "ct-search", (el) => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(async () => {
+    K.query = el.value.trim();
+    K.list = await api.listContacts(K.query).catch(() => []);
+    // Redraw the list only, so the search box keeps focus.
+    const pos = el.selectionStart;
+    render();
+    const box = $("#contacts .ct-search");
+    box.focus();
+    box.setSelectionRange(pos, pos);
+  }, 150);
+});
+on("click", "ct-open", (el) => { K.selected = +el.dataset.id; render(); });
+on("click", "ct-back", () => { K.selected = null; render(); });
+on("click", "ct-new", () => editor({}));
+on("click", "ct-edit", () => editor(K.list.find((c) => c.id === K.selected)));
+on("click", "ct-mail", (el) => openCompose({ to: el.dataset.to }));
+on("click", "ct-sync", () => sync());
+on("click", "ct-books", () => books());
+on("click", "ct-save", async (el) => {
+  const v = (n) => $(`#modal [name=${n}]`).value;
+  try {
+    const old = K.list.find((c) => c.id === +el.dataset.id);
+    const id = await api.saveContact(old ? old.id : null, { uid: old?.uid ?? "", name: v("name"), emails: lines(v("emails")), phones: v("phones").split("\n").map((s) => s.trim()).filter(Boolean), organization: v("organization"), notes: v("notes") });
+    put("#modal", "");
+    K.selected = id;
+    await load();
+  } catch (e) { fail(e); }
+});
+on("click", "ct-delete", async () => {
+  const c = K.list.find((x) => x.id === K.selected);
+  if (!c || !confirm(`Delete ${c.name}?`)) return;
+  try { await api.deleteContact(c.id); K.selected = null; await load(); } catch (e) { toast(String(e)); }
+});
+on("click", "ct-import", () => $("#contacts [name=ct-file]").click());
+on("change", "ct-file", async (el) => {
+  const file = el.files?.[0];
+  el.value = "";
+  if (!file) return;
+  try {
+    const r = await api.importContacts(await file.text());
+    toast(`Imported ${file.name}: ${r.added} new, ${r.merged} merged into existing contacts`);
+    await load();
+  } catch (e) { toast(String(e)); }
+});
+on("click", "ct-export", async () => {
+  try { toast(`Contacts saved to ${await api.exportContacts()}`); } catch (e) { toast(String(e)); }
+});
+on("click", "ct-book-add", async (el) => {
+  const v = (n) => $(`#modal [name=${n}]`).value.trim();
+  el.disabled = true;
+  el.textContent = "Checking…";
+  try {
+    await api.addCarddav(v("url"), v("username"), $("#modal [name=password]").value, v("bookname"));
+    put("#modal", "");
+    await load();
+  } catch (e) {
+    fail(e);
+    el.disabled = false;
+    el.textContent = "Add address book";
+  }
+});
+on("click", "ct-book-remove", async (el) => {
+  await api.removeContactSource(+el.dataset.id).catch((e) => toast(String(e)));
+  K.sources = await api.contactSources();
+  books();
+  load();
+});

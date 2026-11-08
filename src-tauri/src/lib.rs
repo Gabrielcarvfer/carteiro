@@ -15,6 +15,8 @@ use mail_core::calendar;
 use mail_core::ical::Event;
 use mail_core::oauth::{self, ClientConfig, Purpose};
 use mail_core::store::{CalSource, CalendarInfo, StoredEvent};
+use mail_core::contacts::{self, Contact};
+use mail_core::store::{ContactImport, ContactSource, StoredContact};
 use mail_core::{Account, AuthMethod, Credential, Endpoint, Protocol, Security};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -438,6 +440,7 @@ async fn sync_all(app: &AppHandle) {
         }
     }
     let _ = sync_calendars_inner(&s).await;
+    let _ = sync_contacts_inner(&s).await;
     // Keep the chosen period available offline, at most hourly.
     if calendar::now() - s.last_offline.load(Ordering::SeqCst) > 3600 {
         s.last_offline.store(calendar::now(), Ordering::SeqCst);
@@ -667,7 +670,132 @@ async fn oauth_sign_in(app: AppHandle, state: State<'_, AppState>, provider: Aut
         _ => ("microsoft", String::new()),
     };
     st.add_cal_source(kind, Some(account.id), &url, &email, &email).map_err(err)?;
+    ensure_account_contacts(&st, &account).map_err(err)?;
     Ok(SignInResult::Account { account })
+}
+
+// ---- contacts --------------------------------------------------------------------------
+
+/// Google / Microsoft accounts come with their address book (accounts
+/// added before contacts existed get it on the next sync).
+fn ensure_account_contacts(st: &Store, a: &Account) -> mail_core::Result<()> {
+    let kind = match a.auth {
+        AuthMethod::Google => "google",
+        AuthMethod::Microsoft => "microsoft",
+        AuthMethod::Password => return Ok(()),
+    };
+    if st.contact_sources()?.iter().any(|c| c.account_id == Some(a.id)) {
+        return Ok(());
+    }
+    let url = if kind == "google" { contacts::google_carddav_url(&a.email) } else { String::new() };
+    st.add_contact_source(kind, Some(a.id), &url, &a.email, &a.email)?;
+    Ok(())
+}
+
+async fn contact_credential(s: &AppState, src: &ContactSource) -> Res<Credential> {
+    match src.kind.as_str() {
+        "carddav" => Ok(Credential::Password(secrets::get(&*lock(s)?, &format!("contacts-{}", src.id))?)),
+        kind => {
+            let provider = if kind == "google" { AuthMethod::Google } else { AuthMethod::Microsoft };
+            let account = src.account_id.ok_or("this address book has no account")?;
+            oauth_token(s, provider, &format!("oauth-acct-{account}"), Purpose::Contacts).await
+        }
+    }
+}
+
+async fn sync_contacts_inner(s: &AppState) -> Vec<String> {
+    if let Ok(st) = lock(s) {
+        for a in st.list_accounts().unwrap_or_default() {
+            let _ = ensure_account_contacts(&st, &a);
+        }
+    }
+    let sources = lock(s).and_then(|st| st.contact_sources().map_err(err)).unwrap_or_default();
+    let mut errors = Vec::new();
+    for src in sources.iter().filter(|x| x.kind != "local") {
+        let r = match contact_credential(s, src).await {
+            Ok(cred) => contacts::sync_source(&s.store, src, &cred).await.map_err(err),
+            Err(e) => Err(e),
+        };
+        if let Err(e) = r {
+            errors.push(format!("{}: {e}", src.name));
+        }
+    }
+    errors
+}
+
+#[tauri::command]
+async fn sync_contacts(state: State<'_, AppState>) -> Res<Vec<String>> {
+    Ok(sync_contacts_inner(state.inner()).await)
+}
+
+#[tauri::command]
+fn list_contacts(state: State<'_, AppState>, query: String) -> Res<Vec<StoredContact>> {
+    lock(&state)?.list_contacts(&query, 5000).map_err(err)
+}
+
+#[tauri::command]
+fn save_contact(state: State<'_, AppState>, id: Option<i64>, contact: Contact) -> Res<i64> {
+    let c = contact.normalized().ok_or("A contact needs a name, an email address or a phone number")?;
+    lock(&state)?.save_contact(id, &c).map_err(err)
+}
+
+#[tauri::command]
+fn delete_contact(state: State<'_, AppState>, id: i64) -> Res<()> {
+    lock(&state)?.delete_contact(id).map_err(err)
+}
+
+/// Imports a vCard, CSV (Google / Outlook / Thunderbird) or LDIF file.
+#[tauri::command]
+fn import_contacts(state: State<'_, AppState>, text: String) -> Res<ContactImport> {
+    let list = contacts::parse_any(&text);
+    if list.is_empty() {
+        return Err("No contacts found in this file (vCard, CSV or LDIF expected)".into());
+    }
+    lock(&state)?.import_contacts(list).map_err(err)
+}
+
+/// All contacts as one vCard file in Downloads/Carteiro.
+#[tauri::command]
+fn export_contacts(app: AppHandle, state: State<'_, AppState>, stamp_local: Option<String>) -> Res<String> {
+    let all = lock(&state)?.list_contacts("", u32::MAX).map_err(err)?;
+    let text: String = all.iter().map(|c| contacts::to_vcard(&c.contact)).collect();
+    let path = export_dir(&app)?.join(format!("Carteiro contacts {}.vcf", stamp(stamp_local.as_deref())));
+    std::fs::write(&path, text).map_err(err)?;
+    restrict_to_owner(&path);
+    Ok(path.display().to_string())
+}
+
+#[tauri::command]
+fn list_contact_sources(state: State<'_, AppState>) -> Res<Vec<ContactSource>> {
+    let st = lock(&state)?;
+    st.ensure_local_contacts().map_err(err)?;
+    st.contact_sources().map_err(err)
+}
+
+/// A CardDAV address book (Fastmail, iCloud, Nextcloud...): checked, saved, synced.
+#[tauri::command]
+async fn add_carddav_contacts(state: State<'_, AppState>, url: String, username: String, password: String, name: String) -> Res<i64> {
+    let s = state.inner();
+    let dav = mail_core::caldav::CalDav { user: username.clone(), cred: Credential::Password(password.clone()) };
+    mail_core::carddav::discover(&dav, &url).await.map_err(err)?;
+    let id = {
+        let st = lock(s)?;
+        let id = st.add_contact_source("carddav", None, &url, &username, if name.is_empty() { &url } else { &name }).map_err(err)?;
+        secrets::set(&st, &format!("contacts-{id}"), &password)?;
+        id
+    };
+    let _ = sync_contacts_inner(s).await;
+    Ok(id)
+}
+
+#[tauri::command]
+fn remove_contact_source(state: State<'_, AppState>, id: i64) -> Res<()> {
+    lock(&state)?.remove_contact_source(id).map_err(err)
+}
+
+#[tauri::command]
+fn suggest_addresses(state: State<'_, AppState>, prefix: String) -> Res<Vec<(String, String)>> {
+    lock(&state)?.suggest_addresses(&prefix, 8).map_err(err)
 }
 
 // ---- calendar -------------------------------------------------------------------------
@@ -1087,6 +1215,16 @@ pub fn run() {
             list_calendars,
             list_cal_sources,
             calendar_events,
+            list_contacts,
+            save_contact,
+            delete_contact,
+            import_contacts,
+            export_contacts,
+            list_contact_sources,
+            add_carddav_contacts,
+            remove_contact_source,
+            sync_contacts,
+            suggest_addresses,
             search_events,
             set_calendar_visible,
             sync_calendars,

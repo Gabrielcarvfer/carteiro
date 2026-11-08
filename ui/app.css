@@ -400,3 +400,37 @@ h3.sect { font-size: 15px; margin: 18px 0 4px; }
 }
 .calendar .scrim { display: none; }
 .cal-search { min-width: 160px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 16px; background: var(--surface-2); color: var(--text); }
+
+/* contacts */
+.contacts { flex: 1; min-width: 0; display: flex; background: var(--surface); }
+.contacts[hidden] { display: none; }
+.contacts-mode .folders, .contacts-mode .list, .contacts-mode .reader { display: none; }
+.ct-list { width: 340px; flex: none; display: flex; flex-direction: column; border-right: 1px solid var(--border); min-height: 0; }
+.ct-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 10px 12px 6px; }
+.ct-bar h2 { margin: 0; font-size: 18px; }
+.ct-bar .spacer { flex: 1; }
+.ct-search { margin: 4px 12px 8px; padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-2); color: inherit; }
+.ct-items { flex: 1; overflow: auto; }
+.ct-letter { margin: 0; padding: 8px 14px 2px; font-size: 12px; color: var(--accent); }
+.ct-item { display: flex; gap: 10px; align-items: center; width: 100%; padding: 8px 14px; border: 0; background: transparent; text-align: left; color: inherit; }
+.ct-item:hover { background: var(--hover); }
+.ct-item.on { background: var(--selected); }
+.ct-item .who { display: flex; flex-direction: column; min-width: 0; }
+.ct-item .who > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ct-list .empty { padding: 16px; }
+.ct-detail { flex: 1; min-width: 0; overflow: auto; }
+.ct-card { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 24px 16px; text-align: center; }
+.ct-card h1 { margin: 10px 0 2px; font-size: 22px; }
+.ct-card p { margin: 4px 0; }
+.ct-card pre.text { white-space: pre-wrap; text-align: left; max-width: 520px; }
+@media (max-width: 720px), (max-height: 520px) and (pointer: coarse) {
+  .ct-list { width: auto; flex: 1; border-right: 0; padding-top: env(safe-area-inset-top); }
+  .contacts .ct-detail, .contacts.has-sel .ct-list { display: none; }
+  .contacts.has-sel .ct-detail { display: block; padding-top: env(safe-area-inset-top); }
+  .contacts-mode:has(.contacts.has-sel) .rail { display: none; }
+  .contacts .toolbar .show-narrow { display: inline-flex; }
+}
+.contacts-mode .fab { display: none !important; }
+@media (max-width: 720px), (max-height: 520px) and (pointer: coarse) {
+  .contacts-mode:has(.contacts.has-sel) .body { padding-bottom: 0; }
+}

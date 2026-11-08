@@ -91,6 +91,38 @@ pub async fn events(token: &str, calendar_id: &str, from: i64, to: i64) -> Resul
     Ok(out)
 }
 
+/// A Graph contact as ours.
+pub fn parse_contact(v: &Value) -> Option<(String, crate::contacts::Contact)> {
+    let strings = |key: &str| v.get(key).and_then(Value::as_array).map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect::<Vec<_>>()).unwrap_or_default();
+    let mut phones = vec![s(v, "mobilePhone")];
+    phones.extend(strings("businessPhones"));
+    phones.extend(strings("homePhones"));
+    let c = crate::contacts::Contact {
+        uid: s(v, "id"),
+        name: s(v, "displayName"),
+        emails: v.get("emailAddresses").and_then(Value::as_array).map(|a| a.iter().map(|e| s(e, "address")).collect()).unwrap_or_default(),
+        phones,
+        organization: s(v, "companyName"),
+        notes: s(v, "personalNotes"),
+    };
+    Some((s(v, "id"), c.normalized()?))
+}
+
+/// All of the user's Outlook / Microsoft 365 contacts.
+pub async fn contacts(token: &str) -> Result<Vec<(String, crate::contacts::Contact)>> {
+    let mut url = format!("{BASE}/me/contacts?$top=200&$select=id,displayName,emailAddresses,mobilePhone,businessPhones,homePhones,companyName,personalNotes");
+    let mut out = Vec::new();
+    for _ in 0..100 {
+        let v = get(token, &url).await?;
+        out.extend(v.get("value").and_then(Value::as_array).into_iter().flatten().filter_map(parse_contact));
+        match v.get("@odata.nextLink").and_then(Value::as_str) {
+            Some(next) if next.starts_with(BASE) => url = next.to_string(),
+            _ => break,
+        }
+    }
+    Ok(out)
+}
+
 fn body(e: &Event) -> Value {
     // Wall-clock times in the event's zone (Graph accepts IANA names), so the
     // event keeps its zone; otherwise exact UTC times.

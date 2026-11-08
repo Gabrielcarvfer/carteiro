@@ -6,6 +6,7 @@ import { $, html, on, put, raw } from "./dom.js";
 import { addrList, avatar, bytes, folderLabel, icon, longDate, shortDate } from "./format.js";
 import { openCompose, openRules, openSettings, openSetup, ruleFromMessage } from "./dialogs.js";
 import { showCalendar } from "./calendar.js";
+import { leaveContacts, showContacts } from "./contacts.js";
 
 export const S = {
   accounts: [], account: null, folders: [], folder: "INBOX", threads: [], selected: null, filter: "",
@@ -53,8 +54,9 @@ const closers = {
   drawer: () => { S.drawer = false; layoutState(); },
   modal: () => put("#modal", ""),
   compose: () => put("#compose", ""),
+  contact: () => document.dispatchEvent(new Event("contact-back")),
 };
-function syncLayer(name, open) {
+export function syncLayer(name, open) {
   const i = layers.lastIndexOf(name);
   if (open && i < 0) {
     layers.push(name);
@@ -177,13 +179,17 @@ document.addEventListener("click", (e) => {
 // ---- mail / calendar switch ---------------------------------------------------------
 
 on("click", "mode", (el) => {
-  const cal = el.dataset.mode === "calendar";
+  const cal = el.dataset.mode === "calendar", people = el.dataset.mode === "contacts";
   $(".app").classList.toggle("cal-mode", cal);
+  $(".app").classList.toggle("contacts-mode", people);
   $("#calendar").hidden = !cal;
+  $("#contacts").hidden = !people;
   for (const b of document.querySelectorAll("[data-click=mode]")) b.classList.toggle("on", b === el);
   S.drawer = false;
   layoutState();
   if (cal) showCalendar();
+  if (people) showContacts();
+  else leaveContacts();
 });
 
 // ---- data flow -------------------------------------------------------------

@@ -46,12 +46,13 @@ export function openCompose(init) {
         ${S.accounts.length > 1 ? html`<label><span>From</span><select name="from">
           ${S.accounts.map((a) => html`<option value="${a.id}" ${a.id === from ? "selected" : ""}>${a.name} &lt;${a.email}&gt;</option>`)}
         </select></label>` : ""}
-        <label><span>To</span><input name="to" value="${init.to ?? ""}" autocomplete="email" />
+        <label><span>To</span><input name="to" value="${init.to ?? ""}" autocomplete="off" list="addr-suggest" data-input="addr-suggest" />
           ${showCc ? "" : html`<button class="linkish" data-click="show-cc">Cc/Bcc</button>`}</label>
-        <label class="cc" ${showCc ? "" : "hidden"}><span>Cc</span><input name="cc" value="${init.cc ?? ""}" /></label>
-        <label class="cc" ${showCc ? "" : "hidden"}><span>Bcc</span><input name="bcc" /></label>
+        <label class="cc" ${showCc ? "" : "hidden"}><span>Cc</span><input name="cc" value="${init.cc ?? ""}" autocomplete="off" list="addr-suggest" data-input="addr-suggest" /></label>
+        <label class="cc" ${showCc ? "" : "hidden"}><span>Bcc</span><input name="bcc" autocomplete="off" list="addr-suggest" data-input="addr-suggest" /></label>
         <label><span>Subject</span><input name="subject" value="${init.subject ?? ""}" /></label>
       </div>
+      <datalist id="addr-suggest"></datalist>
       <textarea name="body" placeholder="Write your message">${init.body ?? ""}</textarea>
       <div class="error" hidden></div>
     </div>`);
@@ -60,6 +61,19 @@ export function openCompose(init) {
 }
 
 on("click", "compose-close", () => put("#compose", ""));
+
+// Address fields hold a comma-separated list; suggestions complete the last
+// entry and keep the ones before it.
+let suggestSeq = 0;
+on("input", "addr-suggest", async (el) => {
+  const parts = el.value.split(",");
+  const last = parts.pop().trim();
+  const seq = ++suggestSeq;
+  const found = last.length < 2 || last.includes("@") && last.includes(".") ? [] : await api.suggestAddresses(last).catch(() => []);
+  if (seq !== suggestSeq) return;
+  const before = parts.map((p) => p.trim()).filter(Boolean).map((p) => p + ", ").join("");
+  put("#addr-suggest", html`${found.map(([name, email]) => html`<option value="${before}${name && name !== email ? `${name} <${email}>` : email}">`)}`);
+});
 on("click", "show-cc", (el) => { for (const l of document.querySelectorAll("#compose .cc")) l.hidden = false; el.remove(); });
 on("click", "send", send);
 document.addEventListener("keydown", (e) => {

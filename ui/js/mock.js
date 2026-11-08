@@ -65,6 +65,12 @@ const summary = (key) => {
   };
 };
 
+let contacts = [
+  { id: 1, source_id: 1, read_only: false, uid: "a", name: "Ana Souza", emails: ["ana@example.com"], phones: ["+55 11 91234-5678"], organization: "Acme", notes: "" },
+  { id: 2, source_id: 2, read_only: true, uid: "b", name: "Bob Stone", emails: ["bob@work.example"], phones: [], organization: "", notes: "Met at the conference." },
+  { id: 3, source_id: 1, read_only: false, uid: "c", name: "Carol Lima", emails: ["carol@example.org", "c.lima@work.example"], phones: [], organization: "", notes: "" },
+];
+
 export async function mock(cmd, a) {
   await new Promise((r) => setTimeout(r, 50));
   switch (cmd) {
@@ -116,6 +122,14 @@ export async function mock(cmd, a) {
     case "update_status": case "check_update": return { enabled: true, current: "0.1.0", available: "0.2.0", ready: false, message: "Carteiro 0.2.0 is available." };
     case "install_update": return null;
     case "tracker_status": case "update_trackers": return { builtin: 119175, downloaded: 308642, updated: Math.floor(Date.now() / 1000) - 3600 };
+    case "list_contacts": { const q = (a.query ?? "").toLowerCase(); return contacts.filter((c) => (c.name + " " + c.emails.join(" ")).toLowerCase().includes(q)); }
+    case "list_contact_sources": return [{ id: 1, kind: "local", account_id: null, url: "", username: "", name: "On this device" }, { id: 2, kind: "carddav", account_id: null, url: "https://dav.example.com/", username: "me", name: "Work contacts" }];
+    case "save_contact": { const id = a.id ?? Date.now(); contacts = [...contacts.filter((c) => c.id !== id), { ...a.contact, id, source_id: 1, read_only: false }].sort((p, q) => p.name.localeCompare(q.name)); return id; }
+    case "delete_contact": contacts = contacts.filter((c) => c.id !== a.id); return null;
+    case "import_contacts": return { added: 2, merged: 1 };
+    case "export_contacts": return "~/Downloads/Carteiro/Carteiro contacts.vcf";
+    case "sync_contacts": return [];
+    case "suggest_addresses": return contacts.flatMap((c) => c.emails.map((e) => [c.name, e])).filter(([n, e]) => (n + " " + e).toLowerCase().includes(a.prefix.toLowerCase())).slice(0, 8);
     case "list_calendars": return calendars;
     case "list_cal_sources": return [
       { id: 1, kind: "local", account_id: null, url: "", username: "", name: "On this device" },

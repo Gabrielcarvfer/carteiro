@@ -55,6 +55,27 @@ CREATE TABLE IF NOT EXISTS msg_refs (
     ref_id TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_refs_ref ON msg_refs(ref_id);
+-- Contacts: "local" (created / imported here) or mirrored from a CardDAV,
+-- Google or Microsoft address book (replaced on every sync, read-only).
+CREATE TABLE IF NOT EXISTS contact_sources (
+    id INTEGER PRIMARY KEY,
+    kind TEXT NOT NULL,
+    account_id INTEGER REFERENCES accounts(id) ON DELETE CASCADE,
+    url TEXT NOT NULL DEFAULT '',
+    username TEXT NOT NULL DEFAULT '',
+    name TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS contacts (
+    id INTEGER PRIMARY KEY,
+    source_id INTEGER NOT NULL REFERENCES contact_sources(id) ON DELETE CASCADE,
+    remote_id TEXT NOT NULL DEFAULT '',
+    etag TEXT,
+    name TEXT NOT NULL,
+    search TEXT NOT NULL,
+    data TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_contacts_source ON contacts(source_id);
+CREATE INDEX IF NOT EXISTS idx_contacts_name ON contacts(name COLLATE NOCASE);
 -- Search text of each downloaded message, kept only when ClamAV found it
 -- clean (status 'clean'); 'infected' rows record that it must not be indexed.
 CREATE TABLE IF NOT EXISTS msg_text (
@@ -216,6 +237,32 @@ pub struct CalendarInfo {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ContactSource {
+    pub id: i64,
+    pub kind: String,
+    pub account_id: Option<i64>,
+    pub url: String,
+    pub username: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredContact {
+    pub id: i64,
+    pub source_id: i64,
+    /// Mirrored from a server: edited there, not here.
+    pub read_only: bool,
+    #[serde(flatten)]
+    pub contact: crate::contacts::Contact,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ContactImport {
+    pub added: usize,
+    pub merged: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct StoredEvent {
     pub id: i64,
     pub calendar_id: i64,
@@ -684,6 +731,162 @@ impl Store {
         let mut st = self.conn.prepare_cached("SELECT ref_id FROM msg_refs WHERE msg = ?1 ORDER BY rowid")?;
         let rows = st.query_map([msg], |r| r.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    // ---- contacts ---------------------------------------------------------------------
+
+    /// The "On this device" source (created on first use).
+    pub fn ensure_local_contacts(&self) -> Result<i64> {
+        if let Ok(id) = self.conn.query_row("SELECT id FROM contact_sources WHERE kind = 'local' ORDER BY id LIMIT 1", [], |r| r.get(0)) {
+            return Ok(id);
+        }
+        self.conn.execute("INSERT INTO contact_sources (kind, name) VALUES ('local', 'On this device')", [])?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn contact_sources(&self) -> Result<Vec<ContactSource>> {
+        let mut st = self.conn.prepare_cached("SELECT id, kind, account_id, url, username, name FROM contact_sources ORDER BY kind = 'local' DESC, id")?;
+        let rows = st
+            .query_map([], |r| Ok(ContactSource { id: r.get(0)?, kind: r.get(1)?, account_id: r.get(2)?, url: r.get(3)?, username: r.get(4)?, name: r.get(5)? }))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn add_contact_source(&self, kind: &str, account_id: Option<i64>, url: &str, username: &str, name: &str) -> Result<i64> {
+        self.conn.execute(
+            "INSERT INTO contact_sources (kind, account_id, url, username, name) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![kind, account_id, url, username, name],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn remove_contact_source(&self, id: i64) -> Result<()> {
+        self.conn.execute("DELETE FROM contact_sources WHERE id = ?1 AND kind != 'local'", [id])?;
+        Ok(())
+    }
+
+    fn contact_search_text(c: &crate::contacts::Contact) -> String {
+        format!("{} {} {} {}", c.name, c.emails.join(" "), c.organization, c.phones.join(" ")).to_lowercase()
+    }
+
+    fn row_to_contact(r: &Row) -> rusqlite::Result<StoredContact> {
+        let data: String = r.get(3)?;
+        Ok(StoredContact { id: r.get(0)?, source_id: r.get(1)?, read_only: r.get::<_, String>(2)? != "local", contact: serde_json::from_str(&data).unwrap_or_default() })
+    }
+
+    /// Contacts matching every word of `query` (name, emails, organization,
+    /// phones), by name. Empty query: all of them.
+    pub fn list_contacts(&self, query: &str, limit: u32) -> Result<Vec<StoredContact>> {
+        let words: Vec<String> = query.split_whitespace().take(8).map(|w| like_pattern(&w.to_lowercase())).collect();
+        let cond: String = (0..words.len()).map(|i| format!(" AND c.search LIKE ?{} ESCAPE '\\'", i + 2)).collect();
+        let mut st = self.conn.prepare(&format!(
+            "SELECT c.id, c.source_id, s.kind, c.data FROM contacts c JOIN contact_sources s ON s.id = c.source_id WHERE 1 = 1{cond} ORDER BY c.name COLLATE NOCASE LIMIT ?1"
+        ))?;
+        let mut args: Vec<rusqlite::types::Value> = vec![i64::from(limit).into()];
+        args.extend(words.into_iter().map(Into::into));
+        let rows = st.query_map(rusqlite::params_from_iter(args.iter()), Self::row_to_contact)?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Saves a contact "On this device" (new when `id` is None). Contacts
+    /// mirrored from a server can't be edited here.
+    pub fn save_contact(&self, id: Option<i64>, c: &crate::contacts::Contact) -> Result<i64> {
+        let local = self.ensure_local_contacts()?;
+        let data = serde_json::to_string(c)?;
+        match id {
+            Some(id) => {
+                let n = self.conn.execute(
+                    "UPDATE contacts SET name = ?2, search = ?3, data = ?4 WHERE id = ?1 AND source_id = ?5",
+                    params![id, c.name, Self::contact_search_text(c), data, local],
+                )?;
+                if n == 0 {
+                    return Err(Error::Other("This contact comes from a synced address book; edit it there".into()));
+                }
+                Ok(id)
+            }
+            None => {
+                self.conn.execute(
+                    "INSERT INTO contacts (source_id, name, search, data) VALUES (?1, ?2, ?3, ?4)",
+                    params![local, c.name, Self::contact_search_text(c), data],
+                )?;
+                Ok(self.conn.last_insert_rowid())
+            }
+        }
+    }
+
+    pub fn delete_contact(&self, id: i64) -> Result<()> {
+        let local = self.ensure_local_contacts()?;
+        let n = self.conn.execute("DELETE FROM contacts WHERE id = ?1 AND source_id = ?2", params![id, local])?;
+        if n == 0 {
+            return Err(Error::Other("This contact comes from a synced address book; delete it there".into()));
+        }
+        Ok(())
+    }
+
+    /// Mirrors a synced address book: its contacts are replaced as a whole.
+    pub fn replace_contacts(&mut self, source_id: i64, list: &[(String, Option<String>, crate::contacts::Contact)]) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM contacts WHERE source_id = ?1", [source_id])?;
+        {
+            let mut st = tx.prepare_cached("INSERT INTO contacts (source_id, remote_id, etag, name, search, data) VALUES (?1, ?2, ?3, ?4, ?5, ?6)")?;
+            for (remote, etag, c) in list {
+                st.execute(params![source_id, remote, etag, c.name, Self::contact_search_text(c), serde_json::to_string(c)?])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Imports into "On this device", merging people already there (same
+    /// email, or same name when neither has one).
+    pub fn import_contacts(&mut self, list: Vec<crate::contacts::Contact>) -> Result<ContactImport> {
+        let local = self.ensure_local_contacts()?;
+        let mut existing: Vec<(i64, crate::contacts::Contact)> = self
+            .list_contacts("", u32::MAX)?
+            .into_iter()
+            .filter(|c| c.source_id == local)
+            .map(|c| (c.id, c.contact))
+            .collect();
+        let mut report = ContactImport::default();
+        let tx = self.conn.transaction()?;
+        for c in list {
+            if let Some((id, old)) = existing.iter_mut().find(|(_, o)| o.same_as(&c)) {
+                old.merge(&c);
+                tx.execute(
+                    "UPDATE contacts SET name = ?2, search = ?3, data = ?4 WHERE id = ?1",
+                    params![*id, old.name, Self::contact_search_text(old), serde_json::to_string(old)?],
+                )?;
+                report.merged += 1;
+            } else {
+                tx.execute(
+                    "INSERT INTO contacts (source_id, name, search, data) VALUES (?1, ?2, ?3, ?4)",
+                    params![local, c.name, Self::contact_search_text(&c), serde_json::to_string(&c)?],
+                )?;
+                existing.push((tx.last_insert_rowid(), c));
+                report.added += 1;
+            }
+        }
+        tx.commit()?;
+        Ok(report)
+    }
+
+    /// "Name <email>" suggestions for addresses starting with `prefix`
+    /// (in the name or the address), for compose.
+    pub fn suggest_addresses(&self, prefix: &str, limit: usize) -> Result<Vec<(String, String)>> {
+        let p = prefix.trim().to_lowercase();
+        if p.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut out = Vec::new();
+        for c in self.list_contacts(&p, 200)? {
+            for e in &c.contact.emails {
+                let starts = e.starts_with(&p) || c.contact.name.to_lowercase().split_whitespace().any(|w| w.starts_with(&p));
+                if starts && out.len() < limit {
+                    out.push((c.contact.name.clone(), e.clone()));
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// Downloaded messages whose text hasn't been scanned for indexing yet.
@@ -1338,6 +1541,35 @@ mod tests {
             .unwrap();
         assert_eq!(again, id);
         assert_eq!(s.message(id).unwrap().unwrap().uid, Some(77));
+    }
+
+    #[test]
+    fn contacts_local_imported_and_synced() {
+        use crate::contacts::Contact;
+        let (mut s, _) = store_with_account();
+        let c = |name: &str, email: &str| Contact { name: name.into(), emails: vec![email.into()], ..Default::default() };
+        let ana = s.save_contact(None, &c("Ana Souza", "ana@example.org")).unwrap();
+        let mut edited = c("Ana Souza", "ana@example.org");
+        edited.organization = "Acme".into();
+        s.save_contact(Some(ana), &edited).unwrap();
+        // Import: Ana merges (same email), Bob is new.
+        let rep = s.import_contacts(vec![c("ana@example.org", "ANA@example.org"), c("Bob Silva", "bob@example.org")]).unwrap();
+        assert_eq!((rep.added, rep.merged), (1, 1));
+        // A synced address book: replaced as a whole, read-only.
+        let src = s.add_contact_source("carddav", None, "https://dav.example/", "me", "Work").unwrap();
+        s.replace_contacts(src, &[("a.vcf".into(), Some("e1".into()), c("Carol Pereira", "carol@work.example"))]).unwrap();
+        s.replace_contacts(src, &[("b.vcf".into(), None, c("Dave Costa", "dave@work.example"))]).unwrap();
+        let names = |q: &str| s.list_contacts(q, 50).unwrap().into_iter().map(|x| x.contact.name).collect::<Vec<_>>();
+        assert_eq!(names(""), ["Ana Souza", "Bob Silva", "Dave Costa"], "Carol was replaced by the second sync");
+        assert_eq!(names("acme"), ["Ana Souza"]);
+        let dave = s.list_contacts("dave", 1).unwrap().remove(0);
+        assert!(dave.read_only);
+        assert!(s.save_contact(Some(dave.id), &dave.contact).is_err(), "synced contacts aren't edited here");
+        assert!(s.delete_contact(dave.id).is_err());
+        assert_eq!(s.suggest_addresses("bo", 5).unwrap(), [("Bob Silva".to_string(), "bob@example.org".to_string())]);
+        assert_eq!(s.suggest_addresses("silva", 5).unwrap().len(), 1, "by name too");
+        s.remove_contact_source(src).unwrap();
+        assert_eq!(names(""), ["Ana Souza", "Bob Silva"]);
     }
 
     #[test]

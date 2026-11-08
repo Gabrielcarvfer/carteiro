@@ -40,7 +40,7 @@ impl CalDav {
         }
     }
 
-    async fn dav(&self, method: &str, url: &str, depth: &str, body: &str) -> Result<(Response, xml::Node)> {
+    pub(crate) async fn dav(&self, method: &str, url: &str, depth: &str, body: &str) -> Result<(Response, xml::Node)> {
         let r = http::send(self.request(method, url).header("Depth", depth).body("application/xml; charset=utf-8", body))
             .await?
             .ok()?;

@@ -2,7 +2,7 @@
 //! servers or senders is fed thousands of corrupted versions of valid input
 //! and must never panic. Deterministic, so failures reproduce.
 
-use mail_core::{b64, ical, imap, imap_proto, message, rules, safety, settings_io, xml};
+use mail_core::{b64, contacts, ical, imap, imap_proto, message, rules, safety, settings_io, xml};
 
 struct Rng(u64);
 
@@ -147,6 +147,24 @@ fn encodings_and_settings_files() {
             let _ = b64::decode_with(&s, b64::URL_SAFE);
             let _ = message::parse_address_list(&s);
             let _ = settings_io::parse(&s);
+        },
+    );
+}
+
+#[test]
+fn contact_files() {
+    fuzz(
+        "contacts",
+        &[
+            b"BEGIN:VCARD\r\nVERSION:2.1\r\nN;ENCODING=QUOTED-PRINTABLE:Pere=\r\nira;Jo=C3=A3o\r\nitem1.EMAIL:a@b.c\r\nORG:A\\;B;C\r\nEND:VCARD\r\n",
+            b"Name,E-mail 1 - Value,Phone 1 - Value\n\"A, \"\"B\"\"\",a@x ::: b@y,+1\n",
+            b"dn:: Y249Sm/Do28=\ncn:: Sm/Do28=\nmail: j@x\n description\n\n",
+        ],
+        20_000,
+        |b| {
+            for c in contacts::parse_any(&String::from_utf8_lossy(b)) {
+                let _ = contacts::parse_vcards(&contacts::to_vcard(&c));
+            }
         },
     );
 }

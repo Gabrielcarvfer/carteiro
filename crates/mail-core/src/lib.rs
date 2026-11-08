@@ -5,7 +5,9 @@
 pub mod account;
 pub mod b64;
 pub mod caldav;
+pub mod carddav;
 pub mod calendar;
+pub mod contacts;
 pub mod dedup;
 pub mod error;
 pub mod graph;

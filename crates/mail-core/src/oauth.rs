@@ -25,6 +25,8 @@ pub enum Purpose {
     Mail,
     /// CalDAV (Google) or Graph (Microsoft).
     Calendar,
+    /// CardDAV (Google) or Graph (Microsoft).
+    Contacts,
 }
 
 struct Endpoints {
@@ -46,8 +48,8 @@ fn endpoints(p: AuthMethod) -> Result<Endpoints> {
 /// Scopes requested at sign-in (consent for everything at once).
 pub fn consent_scopes(p: AuthMethod) -> &'static str {
     match p {
-        AuthMethod::Google => "openid email profile https://mail.google.com/ https://www.googleapis.com/auth/calendar",
-        _ => "openid email profile offline_access https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/SMTP.Send https://graph.microsoft.com/Calendars.ReadWrite",
+        AuthMethod::Google => "openid email profile https://mail.google.com/ https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/carddav",
+        _ => "openid email profile offline_access https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/SMTP.Send https://graph.microsoft.com/Calendars.ReadWrite https://graph.microsoft.com/Contacts.Read",
     }
 }
 
@@ -55,9 +57,10 @@ pub fn consent_scopes(p: AuthMethod) -> &'static str {
 /// mail (outlook.office.com) and calendar (graph.microsoft.com) differ.
 pub fn token_scopes(p: AuthMethod, purpose: Purpose) -> &'static str {
     match (p, purpose) {
-        (AuthMethod::Google, _) => "https://mail.google.com/ https://www.googleapis.com/auth/calendar",
+        (AuthMethod::Google, _) => "https://mail.google.com/ https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/carddav",
         (_, Purpose::Mail) => "offline_access https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/SMTP.Send",
         (_, Purpose::Calendar) => "offline_access https://graph.microsoft.com/Calendars.ReadWrite",
+        (_, Purpose::Contacts) => "offline_access https://graph.microsoft.com/Contacts.Read",
     }
 }
 

@@ -17,6 +17,7 @@ The mail engine (`crates/mail-core`) is plain Rust with no UI dependency, so it 
 
 - **Mail:** IMAP and POP3 with TLS or STARTTLS, SMTP sending, unified inbox across accounts, conversations, Outlook-style rules, flags, search, works offline (Outbox for sending, and flags, moves and deletes replay on reconnect), desktop notifications, tray icon with background sync.
 - **Calendar:** day, week and month views (an agenda list on phones); Microsoft 365 / Outlook (Graph), Google and other CalDAV servers, subscribed `.ics` links, public holidays for 200+ countries with regions, and local calendars.
+- **Contacts:** your own contacts, plus Google, Microsoft 365 / Outlook and other CardDAV address books kept in sync (read-only here). Imports vCard, CSV and LDIF exports from Gmail, Outlook and Thunderbird, merging duplicates; exports vCard. The To/Cc fields suggest addresses from them.
 - **Sign-in:** passwords (the right user-name form is found automatically) or Google / Microsoft sign-in (OAuth 2.0 with PKCE).
 - **Your data:** keep the last day / week / month / 2 months / 6 months / year / all mail offline; save all mail as `.mbox`; export and import settings (never including passwords).
 
@@ -30,6 +31,7 @@ crates/mail-core/      protocol, storage and calendar engine (most tests live he
   store.rs dedup.rs    SQLite cache, threading, deduplicated attachments
   rules.rs             rules engine
   caldav.rs graph.rs ical.rs xml.rs calendar.rs   calendars
+  carddav.rs contacts.rs                          contacts
   oauth.rs             Google / Microsoft sign-in
   scan.rs safety.rs    ClamAV client, attachment and link heuristics
   update.rs            signed self-update from GitHub releases
@@ -110,6 +112,8 @@ cargo test -p mail-core                                  # unit, wire and fuzz t
 scripts/test-mail-server.sh start                        # local GreenMail + throwaway CA
 CARTEIRO_TEST_CA=$PWD/.testmail/ca.pem \
   cargo test -p mail-core --test live_greenmail -- --ignored --test-threads=1
+CARTEIRO_CARDDAV_URL=http://127.0.0.1:5232/ \
+  cargo test -p mail-core --test live_carddav -- --ignored  # a Radicale with alice/alice-pw
 cargo test -p carteiro -- --ignored engine_detects_eicar # real ClamAV (after fetch-clamav.sh)
 ```
 
@@ -141,10 +145,10 @@ cargo tauri dev                   # desktop app
 
 Sign-in needs your own app registrations; client IDs of desktop apps aren't secret. Put the IDs in Settings → *Sign-in apps*, or bake them into CI builds with the repository secrets `CARTEIRO_GOOGLE_CLIENT_ID`, `CARTEIRO_GOOGLE_CLIENT_SECRET` and `CARTEIRO_MICROSOFT_CLIENT_ID`.
 
-- **Google:** in Google Cloud Console, create a project and enable the Gmail API and the CalDAV API. Configure the OAuth consent screen with the scopes `https://mail.google.com/` and `https://www.googleapis.com/auth/calendar`, then create an OAuth client of type *Desktop app*. Until Google verifies the app, only test users you add can sign in, and their sign-ins expire after 7 days.
+- **Google:** in Google Cloud Console, create a project and enable the Gmail API, the CalDAV API and the Google Contacts CardDAV API. Configure the OAuth consent screen with the scopes `https://mail.google.com/`, `https://www.googleapis.com/auth/calendar` and `https://www.googleapis.com/auth/carddav`, then create an OAuth client of type *Desktop app*. Until Google verifies the app, only test users you add can sign in, and their sign-ins expire after 7 days.
 - **Microsoft:** in Entra ID → App registrations, create an app for "Accounts in any organizational directory and personal Microsoft accounts". Add the platform *Mobile and desktop applications* with redirect URI `http://localhost`, and enable *Allow public client flows*. Add these delegated permissions:
   - `IMAP.AccessAsUser.All` and `SMTP.Send` (Office 365 Exchange Online)
-  - `Calendars.ReadWrite` (Microsoft Graph)
+  - `Calendars.ReadWrite` and `Contacts.Read` (Microsoft Graph)
   - `offline_access`, `openid`, `email` and `profile`
 
   Some organisations require an admin to approve third-party apps.
