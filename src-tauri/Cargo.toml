@@ -1,0 +1,36 @@
+[package]
+name = "carteiro"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "carteiro_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+mail-core = { path = "../crates/mail-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Defaults minus "compression" (Brotli for embedded UI files; ours are tiny)
+# and "dynamic-acl" (adding permissions at runtime: not wanted).
+tauri = { version = "2", default-features = false, features = ["wry", "common-controls-v6", "x11", "dbus", "tray-icon"] }
+tokio = { version = "1", features = ["time", "process", "sync"] }
+
+# Linux shows notifications through gdbus instead (see src/notify.rs).
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+tauri-plugin-notification = "2"
+
+[target.'cfg(windows)'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
+
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

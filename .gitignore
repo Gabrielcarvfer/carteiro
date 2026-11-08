@@ -1,0 +1,10 @@
+target/
+src-tauri/gen/
+src-tauri/icons/
+*.keystore
+.idea/
+src-tauri/resources/clamav/
+.testmail/
+# Private keys (e.g. the update signing key) never go into git.
+*.pem
+*.key

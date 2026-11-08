@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2563eb"/>
+      <stop offset="1" stop-color="#0891b2"/>
+    </linearGradient>
+    <linearGradient id="crown" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1e3a8a"/>
+      <stop offset="1" stop-color="#172554"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="16" stdDeviation="20" flood-color="#0b1f4d" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+  <rect width="1024" height="1024" rx="228" fill="url(#bg)"/>
+
+  <!-- envelope -->
+  <g filter="url(#shadow)">
+    <rect x="176" y="392" width="672" height="430" rx="56" fill="#ffffff"/>
+  </g>
+  <path d="M206 420 L512 652 L818 420" fill="none" stroke="#93c5fd" stroke-width="40" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- mail carrier's cap, worn on the envelope, brim facing forward -->
+  <g transform="translate(492 404) rotate(6) scale(1.45)" filter="url(#shadow)">
+    <!-- crown -->
+    <path d="M-155 4 C-160 -112 -84 -172 5 -172 C94 -172 170 -112 165 4 Z" fill="url(#crown)"/>
+    <!-- panel seams and top button -->
+    <path d="M0 -170 C-48 -130 -72 -70 -76 2" fill="none" stroke="#3b5bb5" stroke-width="5" stroke-linecap="round"/>
+    <path d="M10 -170 C58 -130 82 -70 86 2" fill="none" stroke="#14286b" stroke-width="5" stroke-linecap="round"/>
+    <ellipse cx="5" cy="-172" rx="16" ry="8" fill="#facc15"/>
+    <!-- badge: a tiny envelope on the front panel -->
+    <rect x="-25" y="-100" width="60" height="42" rx="6" fill="#facc15"/>
+    <path d="M-21 -95 L5 -76 L31 -95" fill="none" stroke="#1e3a8a" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+    <!-- brim, facing forward -->
+    <path d="M-154 2 C-70 16 90 16 166 0 C196 4 212 22 200 38 C168 60 -40 64 -116 40 C-146 30 -160 14 -154 2 Z" fill="#172554"/>
+    <!-- white stripe near the brim's edge -->
+    <path d="M-128 26 C-100 44 -30 50 40 50 C110 50 168 42 190 30" fill="none" stroke="#ffffff" stroke-width="6" stroke-linecap="round"/>
+    <!-- yellow piping where the brim meets the crown -->
+    <path d="M-157 0 C-90 14 100 14 167 0" fill="none" stroke="#facc15" stroke-width="12" stroke-linecap="round"/>
+  </g>
+</svg>
