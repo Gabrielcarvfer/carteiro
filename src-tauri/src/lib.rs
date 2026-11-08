@@ -37,6 +37,8 @@ pub struct AppState {
     tokens: Mutex<HashMap<String, (String, i64)>>,
     clam: Arc<clamav::Engine>,
     updater: updater::Updater,
+    /// An offline download is running (only one at a time).
+    offline_running: AtomicBool,
     /// Local time zone offset (minutes east of UTC), reported by the interface.
     utc_offset: std::sync::atomic::AtomicI32,
 }
@@ -243,8 +245,8 @@ fn list_folders(state: State<'_, AppState>, account_id: i64) -> Res<Vec<FolderIn
 }
 
 #[tauri::command]
-fn list_threads(state: State<'_, AppState>, account_id: i64, folder: String, query: Option<String>, offset: u32) -> Res<Vec<ThreadSummary>> {
-    lock(&state)?.list_threads(account_id, &folder, query.as_deref(), 100, offset).map_err(err)
+fn list_threads(state: State<'_, AppState>, account_id: i64, folder: String, query: Option<String>, offset: u32, limit: Option<u32>) -> Res<Vec<ThreadSummary>> {
+    lock(&state)?.list_threads(account_id, &folder, query.as_deref(), limit.unwrap_or(100).clamp(1, 5000), offset).map_err(err)
 }
 
 #[derive(serde::Serialize)]
@@ -496,7 +498,7 @@ async fn sync_all(app: &AppHandle) {
     // Keep the chosen period available offline, at most hourly.
     if calendar::now() - s.last_offline.load(Ordering::SeqCst) > 3600 {
         s.last_offline.store(calendar::now(), Ordering::SeqCst);
-        let _ = offline_all(&s).await;
+        let _ = offline_all(app, &s).await;
     }
     // Content search covers only mail the virus scanner found clean.
     let _ = ops::index_clean_text(&s.store, &scanner(&s)).await;
@@ -1052,25 +1054,65 @@ fn since_for(days: u32) -> Option<i64> {
     (days > 0).then(|| calendar::now() - days as i64 * 86400)
 }
 
-async fn offline_all(s: &AppState) -> Res<ops::OfflineReport> {
-    let since = since_for(settings(s).offline_days);
-    let accounts = lock(s)?.list_accounts().map_err(err)?;
-    let mut total = ops::OfflineReport::default();
-    for a in accounts {
-        let (acct, cred) = credential(s, a.id).await?;
-        let r = ops::download_offline(&s.store, &acct, &cred, since).await.map_err(err)?;
-        total.listed += r.listed;
-        total.downloaded += r.downloaded;
-        total.freed += r.freed;
+/// Downloads the offline period for every account, telling the interface
+/// how far it is ("offline-progress", then "offline-done"). One at a time.
+async fn offline_all(app: &AppHandle, s: &AppState) -> Res<ops::OfflineReport> {
+    if s.offline_running.swap(true, Ordering::SeqCst) {
+        return Err("Mail is already being downloaded for offline use".into());
     }
-    Ok(total)
+    let result = async {
+        let since = since_for(settings(s).offline_days);
+        let accounts = lock(s)?.list_accounts().map_err(err)?;
+        let mut total = ops::OfflineReport::default();
+        let last = std::sync::atomic::AtomicI64::new(0);
+        let progress = |p: ops::OfflineProgress| {
+            // At most a few updates a second.
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0);
+            if now - last.load(Ordering::Relaxed) >= 250 || p.done == 0 {
+                last.store(now, Ordering::Relaxed);
+                let _ = app.emit("offline-progress", &p);
+            }
+        };
+        for a in accounts {
+            let (acct, cred) = credential(s, a.id).await?;
+            let r = ops::download_offline_with(&s.store, &acct, &cred, since, &progress).await.map_err(err)?;
+            total.listed += r.listed;
+            total.downloaded += r.downloaded;
+            total.freed += r.freed;
+        }
+        Ok(total)
+    }
+    .await;
+    s.offline_running.store(false, Ordering::SeqCst);
+    let done = match &result {
+        Ok(r) => serde_json::json!({ "report": r }),
+        Err(e) => serde_json::json!({ "error": e }),
+    };
+    let _ = app.emit("offline-done", done);
+    result
 }
 
-/// "Download now" for the offline period in Settings.
+/// "Download now" for the offline period in Settings: starts in the
+/// background (progress arrives as events) and returns at once.
 #[tauri::command]
-async fn download_offline_now(state: State<'_, AppState>) -> Res<ops::OfflineReport> {
+fn download_offline_now(app: AppHandle, state: State<'_, AppState>) -> Res<()> {
+    if state.offline_running.load(Ordering::SeqCst) {
+        return Err("Mail is already being downloaded for offline use".into());
+    }
     state.last_offline.store(calendar::now(), Ordering::SeqCst);
-    offline_all(state.inner()).await
+    tauri::async_runtime::spawn(async move {
+        let s = app.state::<AppState>();
+        let _ = offline_all(&app, &s).await;
+    });
+    Ok(())
+}
+
+/// Lists older messages of a folder (the first sync lists the latest only).
+#[tauri::command]
+async fn load_older(state: State<'_, AppState>, account_id: i64, folder: String) -> Res<usize> {
+    let s = state.inner();
+    let (acct, cred) = credential(s, account_id).await?;
+    ops::load_older(&s.store, &acct, &cred, &folder, 200).await.map_err(err)
 }
 
 /// Where exported files go: Downloads, else Documents, else app data.
@@ -1320,6 +1362,7 @@ pub fn run() {
                 clam: clam.clone(),
                 updater: updater::Updater::new(),
                 utc_offset: std::sync::atomic::AtomicI32::new(0),
+                offline_running: AtomicBool::new(false),
             });
             updater::spawn_background(app.handle().clone());
             // Tracker list: load the saved copy, then refresh it daily.
@@ -1396,6 +1439,7 @@ pub fn run() {
             get_settings,
             scanner_status,
             download_offline_now,
+            load_older,
             export_mail,
             open_link,
             save_attachment,

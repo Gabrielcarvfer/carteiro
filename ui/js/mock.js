@@ -112,8 +112,9 @@ export async function mock(cmd, a) {
     case "add_account": return { ...a.account, id: 2 };
     case "sync_account": return { new_messages: 0, moved_by_rules: 0, folders: folders.length, errors: [] };
     case "list_folders": return folders;
+    case "load_older": return 0;
     case "list_threads": {
-      if (a.folder !== "INBOX") return [];
+      if (a.folder !== "INBOX" || a.offset > 0) return [];
       // A small subset of the engine's search syntax.
       const words = (a.query ?? "").toLowerCase().split(/\s+/).filter(Boolean);
       const q = words.filter((w) => !w.includes(":")).join(" ");

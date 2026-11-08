@@ -297,3 +297,34 @@ async fn invitation_answer_reaches_the_organizer() {
     let others: Vec<String> = astore.lock().unwrap().events_between(0, i64::MAX / 2).unwrap().into_iter().filter(|e| e.remote_id == uid).map(|e| e.rsvp).collect();
     assert_eq!(others, ["", "no", ""]);
 }
+
+#[tokio::test]
+#[ignore]
+async fn older_mail_on_request_and_offline_progress() {
+    let (bstore, bob) = setup("bob", Protocol::Imap).await;
+    let tag = unique("Older");
+    for i in 0..5 {
+        ops::send(&bstore, &bob, &pw("bob"), &draft("alice@carteiro.test", &format!("{tag} #{i}"), "x")).await.unwrap();
+    }
+    // A fresh device that has listed nothing yet: older mail comes in pages.
+    let (astore, alice) = setup("alice", Protocol::Imap).await;
+    astore.lock().unwrap().upsert_folder(alice.id, "INBOX", "INBOX", Some("."), Some("inbox")).unwrap();
+    let first = ops::load_older(&astore, &alice, &pw("alice"), "INBOX", 2).await.unwrap();
+    assert_eq!(first, 2, "a page of the newest");
+    let ours = |s: &Mutex<Store>| s.lock().unwrap().list_threads(alice.id, "INBOX", Some(&tag), 50, 0).unwrap().len();
+    assert_eq!(ours(&astore), 2, "the two newest are ours");
+    let mut more = 0;
+    loop {
+        let n = ops::load_older(&astore, &alice, &pw("alice"), "INBOX", 200).await.unwrap();
+        if n == 0 { break; }
+        more += n;
+    }
+    assert!(more >= 3 && ours(&astore) == 5, "all of them, then nothing more ({more})");
+    // The offline download says how far it is.
+    let seen = std::sync::Mutex::new(Vec::new());
+    let report = ops::download_offline_with(&astore, &alice, &pw("alice"), None, &|p| seen.lock().unwrap().push((p.phase, p.done, p.total))).await.unwrap();
+    let seen = seen.into_inner().unwrap();
+    assert!(report.downloaded >= 5, "{report:?}");
+    assert!(seen.iter().any(|(phase, _, total)| *phase == "downloading" && *total >= 5), "progress reported: {seen:?}");
+    assert!(seen.iter().all(|(_, done, total)| done <= total));
+}

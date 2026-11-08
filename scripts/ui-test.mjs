@@ -108,8 +108,10 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 860, false], ["phone", 39
     await test("press and hold picks; taps add more; delete them together", async () => {
       const before = await js(`document.querySelectorAll("#threads .item").length`);
       const [x, y] = await rect("Cloud Storage");
-      await touch("touchStart", x, y); await sleep(700); await touch("touchEnd"); await sleep(200);
-      expect(await js(`document.querySelectorAll("#threads .item.picked").length`) === 1, "hold didn't pick");
+      await touch("touchStart", x, y); await sleep(700);
+      const during = await js(`document.querySelectorAll("#threads .item.picked").length`);
+      await touch("touchEnd"); await sleep(400);
+      expect(await js(`document.querySelectorAll("#threads .item.picked").length`) === 1, `hold didn't pick (while held: ${during})`);
       expect(await js(`!document.querySelector("#pick-bar").hidden`), "no selection bar");
       await clickText(".item", "Pedro Alves"); await sleep(100);
       await clickText(".item", "Lisbon Air"); await sleep(100);
@@ -120,19 +122,42 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 860, false], ["phone", 39
       expect(await js(`document.querySelectorAll("#threads .item").length`) === before - 2, "not deleted together");
       expect(await js(`document.querySelector("#pick-bar").hidden`), "bar stayed");
     });
-    await test("swipe left marks unread, swipe right marks read", async () => {
+    const swipe = async (x, y, dx, dy = 0) => {
+      await touch("touchStart", x, y);
+      for (let i = 1; i <= 8; i++) { await touch("touchMove", x + (dx * i) / 8, y + (dy * i) / 8); await sleep(16); }
+      await touch("touchEnd"); await sleep(350);
+    };
+    await test("swipe left opens a tray of actions; a button acts", async () => {
+      await page(w, h, mobile);
       const [x, y, width] = await rect("Mum");
       expect(!(await unreadOf("Mum")), "test message should start read");
-      await touch("touchStart", x, y);
-      for (let i = 1; i <= 8; i++) { await touch("touchMove", x - i * width * 0.06, y); await sleep(16); }
-      await touch("touchEnd"); await sleep(400);
-      expect(await unreadOf("Mum"), "swipe left didn't mark unread");
-      await touch("touchStart", x, y);
-      for (let i = 1; i <= 8; i++) { await touch("touchMove", x + i * width * 0.06, y); await sleep(16); }
-      await touch("touchEnd"); await sleep(400);
-      expect(!(await unreadOf("Mum")), "swipe right didn't mark read");
+      const scrollBefore = await js(`document.querySelector("#threads").scrollTop`);
+      await swipe(x, y, -width * 0.5, 30);
+      expect(await js(`document.querySelector("#threads").scrollTop`) === scrollBefore, "the list scrolled during a sideways swipe");
+      const tray = await js(`[...document.querySelectorAll("#threads .item.tray-open .tray-btn")].map((b) => b.textContent.trim())`);
+      expect(tray.join("|") === "Unread|Flag|Archive|Delete", `tray: ${tray}`);
+      expect(/translateX\(-/.test(await js(`document.querySelector("#threads .item.tray-open .item-body").style.transform`)), "row didn't slide sideways");
       expect(await js(`!document.querySelector("#reader .pane h1")`), "a swipe opened the conversation");
-      expect(await js(`!document.querySelector(".swipe-bg")`), "swipe background left behind");
+      await click("#threads .item.tray-open .tray-btn[data-kind=unread]"); await sleep(300);
+      expect(await unreadOf("Mum"), "Unread button didn't act");
+      expect(await js(`!document.querySelector("#threads .item.tray-open")`), "tray stayed open");
+    });
+    await test("a tap elsewhere closes the tray without opening anything", async () => {
+      const [x, y, width] = await rect("Mum");
+      await swipe(x, y, -width * 0.5);
+      await clickText(".item", "Mum"); await sleep(300);
+      expect(await js(`!document.querySelector("#threads .item.tray-open")`), "tray stayed open");
+      expect(await js(`!document.querySelector("#reader .pane h1")`), "the tap opened the conversation");
+    });
+    await test("swipe right picks; check boxes show; taps add more", async () => {
+      const [x, y, width] = await rect("Pedro Alves");
+      await swipe(x, y, width * 0.4);
+      expect(await js(`document.querySelectorAll("#threads .item.picked").length`) === 1, "swipe right didn't pick");
+      expect(await js(`document.querySelectorAll("#threads .pick-box").length`) === await js(`document.querySelectorAll("#threads .item").length`), "no check box on every row");
+      await clickText(".item", "Mum"); await sleep(100);
+      expect(await js(`document.querySelector(".pick-count").textContent`) === "2 selected", "tap didn't add");
+      await click("[data-click=pick-clear]"); await sleep(100);
+      expect(await js(`!document.querySelector("#threads .pick-box")`), "check boxes stayed");
     });
   } else {
     await test("Ctrl-click picks several; flag them together", async () => {
@@ -144,6 +169,14 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 860, false], ["phone", 39
       expect(await js(`[...document.querySelectorAll("#threads .item")].filter((x) => /Cloud Storage|Lisbon Air/.test(x.textContent) && x.querySelector(".flagged")).length`) === 2, "not flagged together");
     });
   }
+
+  await page(w, h, mobile);
+  await test("scrolling to the end asks for older mail", async () => {
+    await js(`(() => { const el = document.querySelector("#threads"); el.style.height = "200px"; el.scrollTop = el.scrollHeight; el.dispatchEvent(new Event("scroll")); })()`);
+    await sleep(500);
+    expect(await js(`!document.querySelector("#threads .older-row")`), "loading row stayed");
+    expect(await js(`document.querySelectorAll("#threads .item").length`) > 0, "list emptied");
+  });
 
   await page(w, h, mobile);
   await test("small month marks days with events", async () => {

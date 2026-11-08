@@ -80,10 +80,12 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
 /* conversation list */
 .list-head { padding: 14px 16px 10px; font-size: 18px; font-weight: 600; border-bottom: 1px solid var(--border); }
 .threads { flex: 1; overflow: auto; }
-.item { position: relative; display: flex; gap: 10px; padding: 10px 12px 10px 11px; border-bottom: 1px solid var(--border); border-left: 3px solid transparent; cursor: default; }
-.item:hover { background: var(--hover); }
-.item.sel { background: var(--selected); }
-.item.unread { border-left-color: var(--accent); }
+/* A row: its content (.item-body) slides over the swipe tray and pick hint. */
+.item { position: relative; overflow: hidden; border-bottom: 1px solid var(--border); cursor: default; background: var(--surface); }
+.item-body { position: relative; z-index: 1; display: flex; gap: 10px; padding: 10px 12px 10px 4px; border-left: 3px solid transparent; background: var(--surface); transition: transform 0.2s ease; }
+.item:hover .item-body { background: linear-gradient(var(--hover), var(--hover)), var(--surface); }
+.item.sel .item-body, .item.picked .item-body { background: linear-gradient(var(--selected), var(--selected)), var(--surface); }
+.item.unread .item-body { border-left-color: var(--accent); }
 .item.unread .who, .item.unread .subject { font-weight: 600; }
 .item.unread .subject, .item.unread .date { color: var(--accent); }
 .item .main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
@@ -99,7 +101,6 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
 .empty { padding: 40px 16px; text-align: center; }
 
 /* expandable conversations in the list */
-.item { padding-left: 4px; }
 .chevron, .chevron-gap { width: 22px; flex: none; }
 .chevron { border: 0; background: transparent; border-radius: 4px; padding: 0; height: 32px; display: flex; align-items: center; justify-content: center; color: var(--text-2); }
 .chevron:hover { background: var(--hover); color: var(--text); }
@@ -502,13 +503,25 @@ h3.sect { font-size: 15px; margin: 18px 0 4px; }
 .pick-bar .pick-count { font-weight: 600; margin-left: 4px; }
 .pick-bar .spacer { flex: 1; }
 .pick-bar select.move { max-width: 120px; }
-.item.picked { background: var(--selected); }
-.pick-mark { flex: none; width: 36px; height: 36px; border-radius: 50%; border: 2px solid var(--accent); display: flex; align-items: center; justify-content: center; color: #fff; box-sizing: border-box; }
-.item.picked .pick-mark { background: var(--accent); }
-#threads .item { -webkit-touch-callout: none; user-select: none; touch-action: pan-y; }
-/* swiping a conversation sideways */
-#threads { position: relative; }
-.item { transition: transform 0.2s ease; background: var(--surface); }
-.item.swiping { transition: none; z-index: 1; }
-.swipe-bg { position: absolute; left: 0; right: 0; display: flex; align-items: center; gap: 8px; padding: 0 20px; color: var(--text-2); font-weight: 600; font-size: 14px; transition: background 0.15s; }
-.swipe-bg.armed { color: #fff; }
+/* Outlook-style check boxes while picking */
+.pick-box { flex: none; align-self: center; width: 22px; height: 22px; border: 2px solid var(--text-2); border-radius: 4px; display: flex; align-items: center; justify-content: center; color: #fff; box-sizing: border-box; }
+.item.picked .pick-box { background: var(--accent); border-color: var(--accent); }
+#threads .item { -webkit-touch-callout: none; user-select: none; }
+/* swiping: left reveals the tray at the right, right shows "Select" at the left */
+.item.swiping .item-body { transition: none; }
+.tray { position: absolute; top: 0; bottom: 0; right: 0; display: flex; visibility: hidden; }
+.item.tray-showing .tray { visibility: visible; }
+.tray-btn { width: 72px; border: 0; color: #fff; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; font-size: 12px; font-weight: 600; }
+.pick-hint { position: absolute; inset: 0 auto 0 0; width: 50%; display: flex; align-items: center; gap: 8px; padding-left: 20px; background: var(--surface-2); color: var(--text-2); font-weight: 600; }
+.item.pick-armed .pick-hint { background: var(--accent); color: #fff; }
+.item.tray-showing .pick-hint { visibility: hidden; }
+
+/* long background work (offline download): a bar at the bottom */
+.progress { position: fixed; left: 16px; bottom: 16px; z-index: 30; width: min(420px, 100vw - 32px); background: var(--surface); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 4px 20px rgb(0 0 0 / 0.2); padding: 10px 12px; font-size: 13px; display: flex; flex-direction: column; gap: 8px; }
+.progress[hidden] { display: none; }
+.progress-track { height: 4px; border-radius: 2px; background: var(--surface-2); overflow: hidden; }
+.progress-track div { height: 100%; background: var(--accent); transition: width 0.3s; }
+.older-row { padding: 14px; text-align: center; }
+@media (max-width: 720px), (max-height: 520px) and (pointer: coarse) {
+  .progress { left: 8px; right: 8px; width: auto; bottom: calc(64px + env(safe-area-inset-bottom)); }
+}

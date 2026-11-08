@@ -728,8 +728,25 @@ fn skip_folder(special: Option<&str>) -> bool {
 
 /// Makes every message since `since` (None = everything) available offline,
 /// and frees cached bodies older than that.
+/// Where an offline download is, for showing progress.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct OfflineProgress {
+    pub account: String,
+    pub folder: String,
+    /// "listing" (finding older messages) or "downloading" (fetching bodies).
+    pub phase: &'static str,
+    pub done: usize,
+    pub total: usize,
+}
+
 pub async fn download_offline(store: &Mutex<Store>, account: &Account, password: &Credential, since: Option<i64>) -> Result<OfflineReport> {
+    download_offline_with(store, account, password, since, &|_| {}).await
+}
+
+/// `download_offline`, reporting progress as it goes.
+pub async fn download_offline_with(store: &Mutex<Store>, account: &Account, password: &Credential, since: Option<i64>, progress: &(dyn Fn(OfflineProgress) + Send + Sync)) -> Result<OfflineReport> {
     let mut report = OfflineReport::default();
+    let tell = |folder: &str, phase: &'static str, done: usize, total: usize| progress(OfflineProgress { account: account.email.clone(), folder: folder.to_string(), phase, done, total });
     if account.incoming_protocol == Protocol::Imap {
         let folders = lock(store)?.list_folders(account.id)?;
         let mut c = imap_session(account, password).await?;
@@ -740,7 +757,10 @@ pub async fn download_offline(store: &Mutex<Store>, account: &Account, password:
             let on_server = c.uid_search_since(since).await?;
             let known = lock(store)?.uids_in_folder(account.id, &f.name)?;
             let new: Vec<u32> = on_server.into_iter().filter(|u| !known.contains(u)).collect();
+            let mut listed = 0;
             for chunk in new.chunks(200) {
+                tell(&f.name, "listing", listed, new.len());
+                listed += chunk.len();
                 let set = chunk.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
                 for h in c.fetch_headers(&set).await? {
                     if h.has_flag("\\Deleted") {
@@ -762,7 +782,8 @@ pub async fn download_offline(store: &Mutex<Store>, account: &Account, password:
                 }
             }
             let missing = lock(store)?.messages_missing_body(account.id, &f.name, since)?;
-            for chunk in missing.chunks(25) {
+            for (i, chunk) in missing.chunks(25).enumerate() {
+                tell(&f.name, "downloading", i * 25, missing.len());
                 let set = chunk.iter().filter_map(|m| m.uid).map(|u| u.to_string()).collect::<Vec<_>>().join(",");
                 if set.is_empty() {
                     continue;
@@ -781,6 +802,40 @@ pub async fn download_offline(store: &Mutex<Store>, account: &Account, password:
         report.freed = lock(store)?.clear_bodies_before(account.id, cutoff)?;
     }
     Ok(report)
+}
+
+/// Lists up to `count` messages older than the oldest one known in `folder`
+/// (the first sync lists only the latest ones). Headers only; bodies come
+/// when opened. Returns how many were added: 0 means there are no more.
+pub async fn load_older(store: &Mutex<Store>, account: &Account, password: &Credential, folder: &str, count: usize) -> Result<usize> {
+    if account.incoming_protocol != Protocol::Imap {
+        return Ok(0);
+    }
+    let raw_name = lock(store)?.folder(account.id, folder)?.map(|f| f.raw_name).unwrap_or_else(|| folder.to_string());
+    let known = lock(store)?.uids_in_folder(account.id, folder)?;
+    let oldest = known.iter().min().copied().unwrap_or(u32::MAX);
+    let mut c = imap_session(account, password).await?;
+    c.select(&raw_name).await?;
+    let mut older: Vec<u32> = c.uid_search_since(None).await?.into_iter().filter(|u| *u < oldest && !known.contains(u)).collect();
+    older.sort_unstable();
+    let take: Vec<u32> = older.into_iter().rev().take(count).collect();
+    let mut added = 0;
+    for chunk in take.chunks(200) {
+        let set = chunk.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
+        for h in c.fetch_headers(&set).await? {
+            if h.has_flag("\\Deleted") {
+                continue;
+            }
+            let meta = parse_meta(h.header.as_deref().unwrap_or(&[]));
+            lock(store)?.insert_message(&crate::store::NewMessage {
+                account_id: account.id, folder: folder.to_string(), uid: Some(h.uid), pop_uidl: None, meta,
+                seen: h.has_flag("\\Seen"), flagged: h.has_flag("\\Flagged"), size: h.size, raw: None,
+            })?;
+            added += 1;
+        }
+    }
+    c.logout().await?;
+    Ok(added)
 }
 
 // ---- export to .mbox ----------------------------------------------------------------

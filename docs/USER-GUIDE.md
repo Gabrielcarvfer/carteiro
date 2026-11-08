@@ -11,8 +11,9 @@ The left rail (the bottom bar on phones) switches between **Mail**, **Calendar**
 
 - **Read:** messages are grouped into conversations, newest first. Older messages in a long thread stay folded until you open them, and quoted text is folded too.
 - **Write:** the compose button (the pencil on phones). The To, Cc and Bcc fields suggest addresses from your contacts as you type. Reply, Reply all and Forward are on each message.
-- **Swipe** a conversation sideways on a touch screen: left marks it unread and right marks it read, unless you choose other actions (flag, archive, delete or nothing) in Settings → *general*.
-- **Several at once:** press and hold a conversation (Ctrl-click or ⌘-click on a computer), then tap others to add or remove them. The bar at the top marks them read or unread, flags, deletes or moves them together; ✕ or Back stops picking.
+- **Swipe left** on a conversation (touch screens) to show up to four buttons: read/unread, flag/unflag, move, archive or delete. Choose which in Settings → *general*.
+- **Several at once:** swipe right on a conversation, or press and hold it (Ctrl-click or ⌘-click on a computer). Every conversation then shows a check box; tap others to add or remove them. The bar at the top marks them read or unread, flags, deletes or moves them together; ✕ or Back stops picking.
+- **Older mail:** the first sync lists each folder's latest 500 messages; scrolling to the end of the list loads older ones from the server, a page at a time.
 - **Act on messages:** flag, mark read or unread, archive, delete, and *Move to* any folder. With no connection, sending goes to the Outbox, and every action is replayed when you're back online.
 - **Filter:** the filter button limits the list to *Unread*, *Flagged*, *To me* or *Has attachments*. Tap the chip above the list to show everything again.
 - **Search:** the search box understands words and these terms, which combine:
@@ -68,7 +69,7 @@ Settings has four sections side by side: swipe sideways (or tap a title, or use 
 
 - **general:** your accounts; when to check for mail (every 15 minutes during working hours by default, Monday to Friday 08:00–18:00, and hourly outside them, or only when you ask); notifications; keeping Carteiro in the tray; the first day of the week.
 - **security & privacy:** turn ClamAV on or off, update its signatures, or use your own `clamd`; refresh the tracker list (it also updates daily).
-- **your data:** how much mail to keep offline (from the last day to all of it); backups (below); save all mail as `.mbox`; export or import your settings (passwords are never included).
+- **your data:** how much mail to keep offline (from the last day to all of it; *Download now* runs in the background, with a progress bar at the bottom of the window); backups (below); save all mail as `.mbox`; export or import your settings (passwords are never included).
 - **about:** updates (turn off automatic installation, check now, or install now), the version, and the licenses of the bundled software.
 
 The sun/moon button switches between light and dark.

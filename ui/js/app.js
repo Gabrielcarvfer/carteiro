@@ -272,7 +272,8 @@ export async function refreshThreads() {
     const list = (await guard(api.unified(listQuery()))) ?? [];
     S.threads = list.map((t) => ({ ...t, acct: t.account_id, ref: refOf(t.account_id, t.thread_key) }));
   } else if (S.account) {
-    const list = (await guard(api.threads(S.account.id, S.folder, listQuery()))) ?? [];
+    // Keep as many as were showing (older ones loaded by scrolling stay).
+    const list = (await guard(api.threads(S.account.id, S.folder, listQuery(), 0, Math.max(100, S.threads.length)))) ?? [];
     S.threads = list.map((t) => ({ ...t, acct: S.account.id, folder: S.folder, ref: refOf(S.account.id, t.thread_key) }));
   }
   renderList();
@@ -419,6 +420,7 @@ function renderFolders() {
 }
 
 function renderList() {
+  openTray = null; // the rows are drawn anew
   const f = S.folders.find((x) => x.name === S.folder);
   // Before folders load (or with no account) IMAP's "INBOX" reads as "Inbox".
   const title = S.folder === UNIFIED ? "All inboxes" : f ? folderLabel(f) : S.folder.toUpperCase() === "INBOX" ? "Inbox" : S.folder;
@@ -426,12 +428,16 @@ function renderList() {
   put("#mobile-title", title);
   put("#threads", S.threads.length ? S.threads.map((t) => html`
     <div class="item ${t.ref === S.selected ? "sel" : ""} ${t.unread ? "unread" : ""} ${S.picked.has(t.ref) ? "picked" : ""}" role="option"
-      aria-selected="${S.picked.size ? S.picked.has(t.ref) : t.ref === S.selected}" draggable="${!S.picked.size}"
+      aria-selected="${S.picked.size ? S.picked.has(t.ref) : t.ref === S.selected}" draggable="${FINE_POINTER && !S.picked.size}"
       data-click="thread" data-dragstart="threaddrag" data-key="${t.ref}" data-latest="${t.latest_id}">
+      <div class="tray" aria-hidden="true">${trayHtml(t)}</div>
+      <div class="pick-hint" aria-hidden="true">${icon("check", 20)}<span>Select</span></div>
+      <div class="item-body">
       ${t.count > 1
         ? html`<button class="chevron ${S.openThreads[t.ref] ? "open" : ""}" title="Show messages" aria-expanded="${!!S.openThreads[t.ref]}" data-click="thread-expand">${icon("chevron", 14)}</button>`
         : html`<span class="chevron-gap"></span>`}
-      ${S.picked.size ? html`<span class="pick-mark" aria-hidden="true">${S.picked.has(t.ref) ? icon("check", 18) : ""}</span>` : avatar(t.participants[0] ?? "?")}
+      ${S.picked.size ? html`<span class="pick-box" role="checkbox" aria-checked="${S.picked.has(t.ref)}">${S.picked.has(t.ref) ? icon("check", 16) : ""}</span>` : ""}
+      ${avatar(t.participants[0] ?? "?")}
       <div class="main">
         <div class="row"><span class="who ellipsis">${t.participants.join(", ")}</span>
           ${t.count > 1 ? html`<span class="count">${t.count}</span>` : ""}</div>
@@ -447,12 +453,17 @@ function renderList() {
         <button class="icon-btn" title="${t.unread ? "Mark as read" : "Mark unread"}" data-click="thread-act" data-kind="${t.unread ? "read" : "unread"}">${icon("read", 15)}</button>
         <button class="icon-btn ${t.flagged ? "on" : ""}" title="${t.flagged ? "Clear flag" : "Flag"}" data-click="thread-act" data-kind="${t.flagged ? "unflag" : "flag"}">${icon("flag", 15)}</button>
       </div>
+      </div>
     </div>
     ${S.openThreads[t.ref] ? threadChildren(t.ref, t.folder) : ""}`) : !S.accounts.length
       ? html`<div class="empty muted"><p>No email account yet.</p><button class="btn primary" data-click="add-account">Add an account</button><p><button class="linkish" data-click="restore-open">or restore from a backup</button></p></div>`
       : html`<div class="empty muted">Nothing here. Enjoy the quiet.</div>`);
   renderPickBar();
 }
+
+// Rows drag to folders only with a mouse: on touch screens, Android's web
+// view would start a drag on a long press and swallow the hold.
+const FINE_POINTER = matchMedia("(pointer: fine)").matches;
 
 // ---- picking several conversations -------------------------------------------------
 
@@ -490,87 +501,171 @@ on("click", "pick-clear", () => { S.picked.clear(); renderList(); });
 on("click", "pick-act", (el) => actOnPicked(el.dataset.kind));
 on("change", "pick-move", (el) => el.value && actOnPicked(`move-to:${el.value}`));
 
-// Press and hold a conversation to start picking; a swipe sideways acts on it.
-const HOLD_MS = 500;
-let press = null, suppressClick = false;
-document.addEventListener("pointerdown", (e) => {
-  const item = e.target.closest?.("#threads .item");
-  if (!item || e.button > 0 || e.target.closest("button, select")) return;
-  press = { item, x: e.clientX, y: e.clientY, id: e.pointerId, touch: e.pointerType !== "mouse", axis: null, dx: 0,
-    timer: setTimeout(() => { press && !press.axis && (press.held = true, suppressClick = true, togglePick(item.dataset.key), navigator.vibrate?.(15)); }, HOLD_MS) };
-});
-document.addEventListener("pointermove", (e) => {
-  if (!press || e.pointerId !== press.id) return;
-  const dx = e.clientX - press.x, dy = e.clientY - press.y;
-  if (!press.axis && Math.hypot(dx, dy) > 8) {
+// ---- holding and swiping a conversation ------------------------------------------
+//
+// Touch: hold to pick; swipe right to pick; swipe left to open a tray of up to
+// four actions (chosen in Settings). Once a gesture is sideways it only moves
+// the row sideways (the list doesn't scroll). Mouse: Ctrl/Cmd-click picks, and
+// holding the button down works too.
+
+export const SWIPE_ACTIONS = [["read", "Read / unread"], ["flag", "Flag / unflag"], ["move", "Move"], ["archive", "Archive"], ["delete", "Delete"]];
+const SWIPE_DEFAULT = ["read", "flag", "archive", "delete"];
+export function swipeActions() {
+  try {
+    const v = JSON.parse(localStorage.getItem("carteiro.swipe.actions"));
+    if (Array.isArray(v)) return v.filter((k) => SWIPE_ACTIONS.some(([x]) => x === k)).slice(0, 4);
+  } catch {}
+  return SWIPE_DEFAULT;
+}
+const TRAY_W = 72;
+// What a tray button does to conversation t, and how it looks.
+function trayButton(kind, t) {
+  if (kind === "read") return t.unread ? ["read", "Read", "read", "#0f6cbd"] : ["unread", "Unread", "compose", "#0f6cbd"];
+  if (kind === "flag") return t.flagged ? ["unflag", "Unflag", "flag", "#ca5010"] : ["flag", "Flag", "flag", "#ca5010"];
+  return { move: ["move", "Move", "folder", "#5c2e91"], archive: ["archive", "Archive", "archive", "#107c10"], delete: ["delete", "Delete", "trash", "#c50f1f"] }[kind];
+}
+function trayHtml(t) {
+  return html`${swipeActions().map((k) => {
+    const [act, label, ic, color] = trayButton(k, t);
+    return html`<button class="tray-btn" style="background:${color}" data-click="tray" data-kind="${act}">${icon(ic, 18)}<span>${label}</span></button>`;
+  })}`;
+}
+
+// A tap right after a hold or swipe belongs to that gesture, not a new one.
+let press = null, quietUntil = 0, openTray = null;
+const quiet = () => { quietUntil = Date.now() + 250; };
+const HOLD_MS = 450;
+const rowOf = (target) => target.closest?.("#threads .item");
+const bodyOf = (item) => item.querySelector(".item-body");
+
+function closeTray() {
+  if (!openTray) return;
+  const b = bodyOf(openTray);
+  if (b) b.style.transform = "";
+  openTray.classList.remove("tray-open");
+  openTray = null;
+}
+
+function startPress(item, x, y, touch) {
+  if (openTray && openTray !== item) closeTray();
+  press = { item, x, y, touch, axis: null, dx: 0, base: item === openTray ? -trayWidth(item) : 0,
+    timer: setTimeout(() => {
+      if (!press || press.axis) return;
+      press.held = true;
+      quiet();
+      closeTray();
+      togglePick(item.dataset.key);
+      navigator.vibrate?.(15);
+    }, HOLD_MS) };
+}
+const trayWidth = (item) => item.querySelectorAll(".tray-btn").length * TRAY_W;
+
+// Returns true when the gesture is sideways (the caller then stops scrolling).
+function movePress(x, y) {
+  if (!press) return false;
+  const dx = x - press.x, dy = y - press.y;
+  if (!press.axis && Math.hypot(dx, dy) > 10) {
     clearTimeout(press.timer);
-    press.axis = press.touch && Math.abs(dx) > Math.abs(dy) * 1.5 && !S.picked.size ? "x" : "y";
-    if (press.axis === "x") startSwipe(press);
+    press.axis = press.touch && Math.abs(dx) > Math.abs(dy) && !S.picked.size ? "x" : "y";
+    if (press.axis === "x") press.item.classList.add("swiping");
   }
-  if (press.axis === "x") moveSwipe(press, dx);
-});
-const endPress = (e) => {
-  if (!press || e.pointerId !== press.id) return;
+  if (press.axis !== "x") return false;
+  const max = trayWidth(press.item);
+  // Left reveals the tray (a little give past it); right pulls toward picking.
+  const pos = Math.max(-max - 24, Math.min(press.item.offsetWidth * 0.5, press.base + dx));
+  press.dx = pos;
+  bodyOf(press.item).style.transform = `translateX(${pos}px)`;
+  press.item.classList.toggle("pick-armed", pos > press.item.offsetWidth * 0.25);
+  press.item.classList.toggle("tray-showing", pos < 0);
+  return true;
+}
+
+function endPress() {
+  if (!press) return;
   clearTimeout(press.timer);
-  if (press.axis === "x") { suppressClick = true; endSwipe(press); }
+  const p = press;
   press = null;
-};
-document.addEventListener("pointerup", endPress);
-document.addEventListener("pointercancel", (e) => { if (press?.axis === "x") press.dx = 0; endPress(e); });
+  if (p.held) return quiet(); // the tap the browser makes on lifting the finger
+  if (p.axis !== "x") return;
+  quiet();
+  p.item.classList.remove("swiping", "pick-armed");
+  const body = bodyOf(p.item);
+  if (p.dx > p.item.offsetWidth * 0.25) {
+    body.style.transform = "";
+    p.item.classList.remove("tray-showing");
+    return togglePick(p.item.dataset.key);
+  }
+  const max = trayWidth(p.item);
+  if (p.dx < -Math.min(48, max / 2) && max) {
+    body.style.transform = `translateX(${-max}px)`;
+    p.item.classList.add("tray-open", "tray-showing");
+    openTray = p.item;
+  } else {
+    body.style.transform = "";
+    p.item.classList.remove("tray-showing");
+    if (openTray === p.item) openTray = null;
+  }
+}
+
+// Touch events, so a sideways swipe can stop the list from scrolling. The
+// rest of a touch is followed on the element it started on: picking redraws
+// the list, and a removed element still gets its touch, but nothing above it does.
+let lastTouch = 0;
+document.addEventListener("touchstart", (e) => {
+  const item = rowOf(e.target);
+  if (!item || e.touches.length > 1 || e.target.closest("select, .tray-btn")) return;
+  startPress(item, e.touches[0].clientX, e.touches[0].clientY, true);
+  const target = e.target;
+  const move = (ev) => { if (press?.touch && movePress(ev.touches[0].clientX, ev.touches[0].clientY)) ev.preventDefault(); };
+  const end = (ev) => {
+    target.removeEventListener("touchmove", move);
+    target.removeEventListener("touchend", end);
+    target.removeEventListener("touchcancel", end);
+    lastTouch = Date.now();
+    if (!press?.touch) return;
+    if (ev.type === "touchcancel") press.dx = 0;
+    endPress();
+  };
+  target.addEventListener("touchmove", move, { passive: false });
+  target.addEventListener("touchend", end);
+  target.addEventListener("touchcancel", end);
+}, { passive: true });
+// Mouse: holding the button down picks too.
+document.addEventListener("mousedown", (e) => {
+  const item = rowOf(e.target);
+  // (browsers imitate mouse events after a touch: those aren't presses)
+  if (item && e.button === 0 && !e.target.closest("button, select") && Date.now() - lastTouch > 800 && !e.sourceCapabilities?.firesTouchEvents) startPress(item, e.clientX, e.clientY, false);
+});
+document.addEventListener("mousemove", (e) => { if (press && !press.touch) movePress(e.clientX, e.clientY); });
+document.addEventListener("mouseup", () => { if (press && !press.touch) endPress(); });
 // Holding a conversation picks it; no text selection or menu from the system.
-document.addEventListener("contextmenu", (e) => { if (e.target.closest?.("#threads .item")) e.preventDefault(); });
-// A hold or a swipe isn't also a tap.
+document.addEventListener("contextmenu", (e) => { if (rowOf(e.target)) e.preventDefault(); });
+// A hold or a swipe isn't also a tap; a tap elsewhere closes an open tray.
 document.addEventListener("click", (e) => {
-  if (suppressClick && e.target.closest?.("#threads")) { e.stopPropagation(); e.preventDefault(); }
-  suppressClick = false;
+  if (Date.now() < quietUntil && e.target.closest?.("#threads")) { e.stopPropagation(); e.preventDefault(); }
+  else if (openTray && !e.target.closest?.(".tray-btn")) {
+    const inside = e.target.closest?.("#threads .item") === openTray;
+    closeTray();
+    if (inside) { e.stopPropagation(); e.preventDefault(); }
+  }
 }, true);
 
-// ---- swiping a conversation --------------------------------------------------------
-
-export const SWIPE_ACTIONS = [["unread", "Mark unread"], ["read", "Mark read"], ["flag", "Flag / unflag"], ["archive", "Archive"], ["delete", "Delete"], ["none", "Nothing"]];
-const SWIPE_DEFAULTS = { left: "unread", right: "read" };
-export function swipeAction(side) {
-  try { return localStorage.getItem(`carteiro.swipe.${side}`) || SWIPE_DEFAULTS[side]; } catch { return SWIPE_DEFAULTS[side]; }
-}
-const SWIPE_LOOK = { unread: ["compose", "#0f6cbd"], read: ["read", "#0f6cbd"], flag: ["flag", "#ca5010"], archive: ["archive", "#107c10"], delete: ["trash", "#c50f1f"] };
-
-function startSwipe(p) {
-  p.bg = document.createElement("div");
-  p.bg.className = "swipe-bg";
-  p.item.parentElement.insertBefore(p.bg, p.item);
-  Object.assign(p.bg.style, { top: `${p.item.offsetTop}px`, height: `${p.item.offsetHeight}px` });
-  p.item.classList.add("swiping");
-}
-function moveSwipe(p, dx) {
-  const side = dx < 0 ? "left" : "right";
-  const kind = swipeAction(side);
-  p.dx = kind === "none" ? 0 : dx;
-  p.item.style.transform = `translateX(${p.dx}px)`;
-  const [ic, color] = SWIPE_LOOK[kind] ?? ["", "transparent"];
-  const armed = Math.abs(p.dx) > p.item.offsetWidth * 0.3;
-  p.bg.style.background = armed ? color : "var(--surface-2)";
-  p.bg.style.justifyContent = side === "left" ? "flex-end" : "flex-start";
-  p.bg.classList.toggle("armed", armed);
-  p.bg.innerHTML = kind === "none" ? "" : String(html`${icon(ic, 20)}<span>${SWIPE_ACTIONS.find(([k]) => k === kind)[1]}</span>`);
-}
-function endSwipe(p) {
-  const side = p.dx < 0 ? "left" : "right";
-  const armed = Math.abs(p.dx) > p.item.offsetWidth * 0.3;
-  p.item.classList.remove("swiping");
-  p.item.style.transform = "";
-  setTimeout(() => p.bg.remove(), 200);
-  if (!armed) return;
-  const t = S.threads.find((x) => x.ref === p.item.dataset.key);
-  let kind = swipeAction(side);
-  if (!t || kind === "none") return;
-  if (kind === "flag") kind = t.flagged ? "unflag" : "flag";
+on("click", "tray", async (el, e) => {
+  e.stopPropagation();
+  const ref = el.closest("[data-key]").dataset.key;
+  const kind = el.dataset.kind;
+  closeTray();
   if (kind === "archive") {
     const archive = (S.viewFolders ?? S.folders).find((f) => f.special === "archive")?.name;
-    if (!archive) return toast("This account has no Archive folder");
-    kind = `move-to:${archive}`;
+    return archive ? threadAct(ref, `move-to:${archive}`) : toast("This account has no Archive folder");
   }
-  threadAct(t.ref, kind);
-}
+  if (kind === "move") {
+    const folders = (S.viewFolders ?? S.folders).filter((f) => f.special !== "outbox" && f.name !== (S.threads.find((t) => t.ref === ref)?.folder ?? S.folder));
+    const r = await choose("Move to which folder?", folders.map((f) => [f.name, folderLabel(f)]));
+    return r && threadAct(ref, `move-to:${r.choice}`);
+  }
+  threadAct(ref, kind);
+});
 
 // Outlook-style expanded conversation: one row per message, newest first.
 function threadChildren(key, folder) {
@@ -982,6 +1077,59 @@ threadsEl.addEventListener("touchend", () => {
 });
 
 // Background sync (tray mode) finished: refresh what's on screen.
+// ---- older mail as you scroll -----------------------------------------------------
+
+// Reaching the end of the list shows more: first the next page of what's
+// on this device, then older messages listed from the server.
+const older = { busy: false, done: new Set() };
+async function loadMore() {
+  if (older.busy || !S.account || S.folder === UNIFIED || S.query || S.filter) return;
+  const where = `${S.account.id}/${S.folder}`;
+  if (older.done.has(where)) return;
+  older.busy = true;
+  renderOlderRow(true);
+  try {
+    let more = (await guard(api.threads(S.account.id, S.folder, null, S.threads.length, 100))) ?? [];
+    if (!more.length && (await guard(api.loadOlder(S.account.id, S.folder))) > 0) {
+      more = (await guard(api.threads(S.account.id, S.folder, null, S.threads.length, 100))) ?? [];
+    }
+    if (!more.length) older.done.add(where);
+    const seen = new Set(S.threads.map((t) => t.ref));
+    S.threads.push(...more.map((t) => ({ ...t, acct: S.account.id, folder: S.folder, ref: refOf(S.account.id, t.thread_key) })).filter((t) => !seen.has(t.ref)));
+  } finally {
+    older.busy = false;
+  }
+  renderList();
+}
+function renderOlderRow(loading) {
+  let row = $("#threads .older-row");
+  if (!loading) return row?.remove();
+  if (!row) { row = document.createElement("div"); row.className = "older-row muted small"; $("#threads").append(row); }
+  row.textContent = "Loading older mail…";
+}
+$("#threads").addEventListener("scroll", (e) => {
+  const el = e.currentTarget;
+  if (el.scrollTop + el.clientHeight > el.scrollHeight - 300) loadMore();
+}, { passive: true });
+
+// ---- offline download progress ---------------------------------------------------
+
+listen("offline-progress", (p) => {
+  const bar = $("#progress");
+  bar.hidden = false;
+  const pct = p.total ? Math.round((p.done / p.total) * 100) : 0;
+  const what = p.phase === "listing" ? "Finding older mail" : "Downloading mail for offline use";
+  put(bar, html`<div class="progress-text"><strong>${what}</strong> · ${p.folder} · ${p.account}
+      <span class="muted">${p.done.toLocaleString()} of ${p.total.toLocaleString()}</span></div>
+    <div class="progress-track" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100"><div style="width:${pct}%"></div></div>`);
+});
+listen("offline-done", (r) => {
+  $("#progress").hidden = true;
+  if (r?.error) toast(`Offline download stopped: ${r.error}`);
+  else if (r?.report && (r.report.downloaded || r.report.listed)) toast(`Offline copy updated: ${r.report.downloaded.toLocaleString()} downloaded, ${r.report.listed.toLocaleString()} older messages listed`);
+  refreshThreads();
+});
+
 // Invitations arriving by mail show up in an open calendar right away.
 listen("calendar-changed", () => refreshCalendar());
 listen("mail-synced", () => { refreshFolders(); refreshThreads(); syncPhoneContacts(); });
