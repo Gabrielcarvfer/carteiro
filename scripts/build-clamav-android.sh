@@ -90,7 +90,9 @@ echo "== OpenSSL"
 if ! built openssl; then
 fetch openssl-3.5.4.tar.gz https://github.com/openssl/openssl/releases/download/openssl-3.5.4/openssl-3.5.4.tar.gz \
   967311f84955316969bdb1d8d4b983718ef42338639c621ec4c34fddef355e99
-(cd "$WORK/openssl-3.5.4" && ./Configure "$OSSL_TARGET" -D__ANDROID_API__=$API no-shared no-tests no-docs no-apps \
+# The API level comes from $CC (…android28-clang); passing -D__ANDROID_API__
+# too only redefines it (a warning in every file).
+(cd "$WORK/openssl-3.5.4" && ./Configure "$OSSL_TARGET" no-shared no-tests no-docs no-apps \
   --prefix="$PREFIX" --libdir=lib >/dev/null && make -j "$JOBS" >/dev/null && make install_sw >/dev/null)
 mark openssl
 fi
