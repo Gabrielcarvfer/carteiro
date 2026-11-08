@@ -76,6 +76,13 @@
    "note": "tracker hosts whose images are never loaded"
   },
   {
+   "name": "Unicode CLDR Windows time zone mapping",
+   "version": "49",
+   "license": "Unicode-3.0",
+   "url": "https://github.com/unicode-org/cldr",
+   "note": "Outlook / Microsoft time zone names"
+  },
+  {
    "name": "AdGuard CNAME-disguised mail trackers list",
    "version": "downloaded daily",
    "license": "MIT",

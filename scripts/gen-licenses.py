@@ -25,6 +25,7 @@ BUNDLED = [
     {"name": "curl", "version": "8.16.0", "license": "curl", "url": "https://curl.se", "note": "used by ClamAV on Android"},
     {"name": "ncurses", "version": "6.5", "license": "X11", "url": "https://invisible-island.net/ncurses/", "note": "used by ClamAV on Android"},
     {"name": "AdGuard Tracking Protection filter", "version": "snapshot", "license": "GPL-3.0", "url": "https://github.com/AdguardTeam/AdGuardFilters", "note": "tracker hosts whose images are never loaded"},
+    {"name": "Unicode CLDR Windows time zone mapping", "version": "49", "license": "Unicode-3.0", "url": "https://github.com/unicode-org/cldr", "note": "Outlook / Microsoft time zone names"},
     {"name": "AdGuard CNAME-disguised mail trackers list", "version": "downloaded daily", "license": "MIT", "url": "https://github.com/AdguardTeam/cname-trackers", "note": "mail tracker hosts whose images are never loaded"},
 ]
 
