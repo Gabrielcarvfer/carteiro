@@ -93,9 +93,11 @@ pub async fn sync_source(store: &Mutex<Store>, source: &CalSource, cred: Option<
     Ok(total)
 }
 
-// ---- public holidays (Nager.Date, open data, no account needed) -----------------
+// ---- public holidays (Nager.Holidays, open data, no account needed) -------------
 
-const HOLIDAYS_API: &str = "https://date.nager.at/api/v3";
+/// Nager.Holidays (formerly date.nager.at, which still answers but now
+/// redirects its website here).
+const HOLIDAYS_API: &str = "https://nagerholidays.com/api/v3";
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct Country {
