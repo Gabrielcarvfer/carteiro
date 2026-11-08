@@ -201,6 +201,22 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 860, false], ["phone", 39
   });
 
   await page(w, h, mobile);
+  await test("saving an attachment says so at once, once; a second save asks", async () => {
+    await clickText(".item", "Q3 planning"); await sleep(800);
+    const chip = `[...document.querySelectorAll("#reader .att")].find((x) => x.textContent.includes("agenda.pdf"))`;
+    await js(`${chip}.click()`); await sleep(50);
+    expect(await js(`${chip}.classList.contains("busy") && ${chip}.textContent.includes("checking and saving")`), "no feedback while saving");
+    await js(`${chip}.click()`); await sleep(50);
+    await sleep(600);
+    expect(await js(`window.__saves`) === 1, `saved ${await js("window.__saves")} times`);
+    expect(await js(`${chip}.textContent.includes("saved")`), "not shown as saved");
+    await js(`${chip}.click()`); await sleep(200);
+    expect(/Already saved to/.test(await js(`document.querySelector(".ask p")?.textContent ?? ""`)), "no question before saving again");
+    await click(".ask [data-ask='']"); await sleep(100);
+    expect(await js(`window.__saves`) === 1, "saved again after Cancel");
+  });
+
+  await page(w, h, mobile);
   await test("scrolling to the end asks for older mail", async () => {
     await js(`(() => { const el = document.querySelector("#threads"); el.style.height = "200px"; el.scrollTop = el.scrollHeight; el.dispatchEvent(new Event("scroll")); })()`);
     await sleep(500);

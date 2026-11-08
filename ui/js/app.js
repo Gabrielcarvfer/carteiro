@@ -905,10 +905,10 @@ function renderMessage(m) {
               ${m.quoted_text ? quotedPlain(m) : ""}
               ${m.body_html ? html`<button class="linkish" data-click="plain" data-id="${m.id}">Show formatted</button>` : ""}`}
         </div>
-        ${m.attachments.length ? html`<div class="attachments">${m.attachments.map((a, i) => html`<div class="att ${a.danger ? "danger" : m.attachments_blocked ? "locked" : "savable"} ${S.hits?.has(m.id) && isHitAttachment(a) ? "hit" : ""}" title="${a.danger ?? (m.verdict.status === "infected" ? `Blocked: ClamAV found ${m.verdict.signature}` : m.attachments_blocked ? "Blocked until ClamAV has checked this message" : `Checked by ClamAV. Save ${a.name} to Downloads (it's scanned again on its own first)`)}"
+        ${m.attachments.length ? html`<div class="attachments">${m.attachments.map((a, i) => html`<div class="att ${a.danger ? "danger" : m.attachments_blocked ? "locked" : "savable"} ${S.hits?.has(m.id) && isHitAttachment(a) ? "hit" : ""} ${saving.has(`${m.id}/${i}`) ? "busy" : saved.has(`${m.id}/${i}`) ? "saved" : ""}" title="${a.danger ?? (m.verdict.status === "infected" ? `Blocked: ClamAV found ${m.verdict.signature}` : m.attachments_blocked ? "Blocked until ClamAV has checked this message" : `Checked by ClamAV. Save ${a.name} to Downloads (it's scanned again on its own first)`)}"
           ${a.danger || m.attachments_blocked ? "" : raw(`role="button" tabindex="0" data-click="save-att" data-id="${m.id}" data-index="${i}"`)}>
           ${icon(a.danger ? "junk" : "clip", 14)} <span class="ellipsis">${a.name}</span> <span class="muted small">${bytes(a.size)}</span>
-          ${a.danger ? html`<span class="tag">dangerous type</span>` : m.verdict.status === "infected" ? html`<span class="tag">malware</span>` : m.attachments_blocked ? html`<span class="tag muted">not scanned yet</span>` : html`<span class="tag ok">scanned</span>`}</div>`)}</div>` : ""}
+          ${a.danger ? html`<span class="tag">dangerous type</span>` : m.verdict.status === "infected" ? html`<span class="tag">malware</span>` : m.attachments_blocked ? html`<span class="tag muted">not scanned yet</span>` : html`<span class="tag ok">${saving.has(`${m.id}/${i}`) ? "checking and saving…" : saved.has(`${m.id}/${i}`) ? "saved" : "scanned"}</span>`}</div>`)}</div>` : ""}
       ` : ""}
     </article>`;
 }
@@ -1086,13 +1086,43 @@ on("click", "msg-delete", (el) => act("delete", [+el.dataset.id]));
 on("click", "msg-unread", (el) => act("unread", [+el.dataset.id]));
 const isCalendarFile = (a) => /\.(ics|ical|ifb|icalendar)$/i.test(a?.name ?? "") || /^(text\/calendar|application\/ics)$/i.test(a?.mime ?? "");
 
+// Saving an attachment: it's checked by ClamAV first, which can take a moment,
+// so the chip says so at once and further taps wait. Saved ones say where.
+const saving = new Set(), saved = new Map();
 on("click", "save-att", async (el) => {
   const id = +el.dataset.id, index = +el.dataset.index;
+  const key = `${id}/${index}`;
+  if (saving.has(key)) return;
   const a = S.messages.find((m) => m.id === id)?.attachments[index];
   if (isCalendarFile(a) && !(await calendarAttachment(id, index))) return;
-  const path = await guard(api.saveAttachment(id, index));
-  if (path) toast(`Saved to ${path}`);
+  if (saved.has(key)) {
+    const r = await choose(`Already saved to ${saved.get(key)}`, [["again", "Save another copy"]]);
+    if (!r) return;
+  }
+  saving.add(key);
+  setChip(key, "busy");
+  try {
+    const path = await api.saveAttachment(id, index);
+    saved.set(key, path);
+    toast(`Saved to ${path}`);
+  } catch (e) {
+    toast(String(e));
+  } finally {
+    saving.delete(key);
+    setChip(key, saved.has(key) ? "done" : "");
+  }
 });
+// Shows a chip's state (also after the conversation is redrawn).
+function setChip(key, state) {
+  const [id, index] = key.split("/");
+  const chip = document.querySelector(`[data-click=save-att][data-id="${id}"][data-index="${index}"]`);
+  if (!chip) return;
+  chip.classList.toggle("busy", state === "busy");
+  chip.classList.toggle("saved", state === "done");
+  chip.setAttribute("aria-busy", state === "busy");
+  const tag = chip.querySelector(".tag");
+  if (tag) tag.textContent = state === "busy" ? "checking and saving…" : state === "done" ? "saved" : "scanned";
+}
 
 // A calendar file: offer to add it (or show it, if it's already there).
 // Resolves true when the file should be saved to Downloads instead.

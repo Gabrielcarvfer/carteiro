@@ -102,7 +102,11 @@ export async function mock(cmd, a) {
       .map((t) => ({ ...t, account_id: 1, account_email: account.email, folder: "INBOX" }));
     case "test_scanner": throw `Couldn't reach clamd at ${a.addr}: connection refused`;
     case "download_offline_now": return { listed: 120, downloaded: 118, freed: 40 };
-    case "save_attachment": return `/home/demo/Downloads/attachment-${a.index}`;
+    case "save_attachment":
+      // Checking and saving takes a moment in the app.
+      window.__saves = (window.__saves ?? 0) + 1;
+      await new Promise((r) => setTimeout(r, 400));
+      return `/home/demo/Downloads/Carteiro/attachment-${a.index}`;
     case "export_mail": return ["/home/demo/Downloads/Carteiro mail 2026-11-08 0130", [{ path: "/home/demo/Downloads/Carteiro mail 2026-11-08 0130/demo@example.com", folders: 5, messages: 1234, skipped: 0 }]];
     case "export_settings": return "/home/demo/Downloads/Carteiro settings 2026-11-08 0130.json";
     case "import_settings": return { report: { accounts_added: ["demo@new.example"], accounts_existing: ["demo@example.com"], needs_password: ["demo@new.example"], needs_sign_in: [], rules_added: 3, calendars_added: 1, calendars_to_readd: ["Work CalDAV"] }, ui: { week_start: "1", theme: "dark" } };

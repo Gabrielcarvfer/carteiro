@@ -150,6 +150,72 @@ async fn fetch_bodies(store: &Mutex<Store>, account: &Account, password: &Creden
     Ok(())
 }
 
+/// Of the messages a search matched in one conversation (`hits`, newest
+/// first), those where the match is their own: not only in text they quote,
+/// and not only in a file an earlier message of the conversation already
+/// carried (same SHA-256). So a reply quoting the original, or forwarding
+/// its attachment, isn't marked; the original is. Messages whose content
+/// isn't on the device are kept as they are; if nothing would remain, the
+/// matches are returned unchanged.
+pub fn own_hits(st: &Store, account_id: i64, thread_key: &str, hits: &[i64], query: &str) -> Result<Vec<i64>> {
+    let q = crate::search::parse(query);
+    if q.words.is_empty() && q.attachment_types.is_empty() {
+        return Ok(hits.to_vec());
+    }
+    // Every message of the conversation (any folder), oldest first, with its
+    // files as (SHA-256, name).
+    type Files = Vec<(String, String)>;
+    let mut all: Vec<(i64, i64, Files)> = Vec::new();
+    for id in st.thread_message_ids(account_id, thread_key, None)? {
+        let Some(m) = st.message(id)? else { continue };
+        let files = st
+            .raw(id)?
+            .map(|raw| {
+                parse_body(&raw)
+                    .attachments
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, a)| crate::message::attachment_bytes(&raw, i).map(|(_, b)| (crate::update::sha256_hex(&b), a.name.clone())))
+                    .collect()
+            })
+            .unwrap_or_default();
+        all.push((id, m.date, files));
+    }
+    all.sort_by_key(|(id, date, _)| (*date, *id));
+    let words: Vec<String> = q.words.iter().map(|w| w.to_lowercase()).collect();
+    let mut kept = Vec::new();
+    for &id in hits {
+        let Some(raw) = st.raw(id)? else {
+            kept.push(id);
+            continue;
+        };
+        let Some(m) = st.message(id)? else { continue };
+        let pos = all.iter().position(|(x, _, _)| *x == id).unwrap_or(0);
+        let earlier: HashSet<&str> = all[..pos].iter().flat_map(|(_, _, f)| f.iter().map(|(h, _)| h.as_str())).collect();
+        let own_files: Vec<&(String, String)> = all.get(pos).map(|(_, _, f)| f.iter().filter(|(h, _)| !earlier.contains(h.as_str())).collect()).unwrap_or_default();
+        let body = parse_body(&raw);
+        let text = body.text.or_else(|| body.html.as_deref().map(crate::safety::strip_tags)).unwrap_or_default();
+        let (new, _quoted) = split_quoted(&text);
+        let mut own = format!("{} {} {} {}", m.subject, m.from.name, m.from.email, new).to_lowercase();
+        for (hash, name) in &own_files {
+            own.push(' ');
+            own.push_str(&name.to_lowercase());
+            if let Some(t) = st.attachment_text(hash)? {
+                own.push(' ');
+                own.push_str(&t.to_lowercase());
+            }
+        }
+        let words_ok = words.iter().all(|w| own.contains(w.as_str()));
+        let types_ok = q.attachment_types.iter().all(|exts| {
+            own_files.iter().any(|(_, name)| name.rsplit_once('.').is_some_and(|(_, e)| exts.iter().any(|x| x.eq_ignore_ascii_case(e))))
+        });
+        if words_ok && types_ok {
+            kept.push(id);
+        }
+    }
+    Ok(if kept.is_empty() { hits.to_vec() } else { kept })
+}
+
 /// Searchable text of a message: the plain-text part (or the HTML's text),
 /// then each attachment's name and the text inside it (PDF, Office…). A
 /// file's text is read once and kept by its SHA-256, so the same file in
@@ -1186,5 +1252,42 @@ mod file_name_tests {
         assert_eq!(found("kangaroo"), 2, "a word inside the Word file");
         assert_eq!(found("remembered"), 1, "the same file in another message isn't read again");
         assert_eq!(found("\"Plan Q3\""), 2, "attachment names too");
+    }
+
+    #[test]
+    fn search_marks_the_original_not_replies_that_quote_it() {
+        use super::*;
+        let st = Store::open_in_memory().unwrap();
+        let ep = crate::Endpoint { host: "h".into(), port: 993, security: crate::Security::Tls, allow_insecure: false };
+        let mut a = Account {
+            id: 0, name: "Me".into(), email: "me@x.org".into(), username: "me".into(), incoming_protocol: crate::Protocol::Imap,
+            incoming: ep.clone(), smtp: ep, smtp_username: None, signature: String::new(), auth: crate::AuthMethod::Password,
+        };
+        st.add_account(&mut a).unwrap();
+        let pdf = crate::b64::encode(b"%PDF-1.4 the handover plan");
+        let mail = |mid: &str, refs: &str, date: &str, text: &str, attach: bool| {
+            let mut m = format!("From: {}\r\nSubject: Re: Project\r\nMessage-ID: <{mid}@x>\r\n{refs}Date: {date}\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\n{text}\r\n", if mid == "o" { "ana@x.org" } else { "bob@x.org" });
+            if attach {
+                m += &format!("--b\r\nContent-Type: application/pdf; name=\"handover.pdf\"\r\nContent-Disposition: attachment; filename=\"handover.pdf\"\r\nContent-Transfer-Encoding: base64\r\n\r\n{pdf}\r\n");
+            }
+            m += "--b--\r\n";
+            m.into_bytes()
+        };
+        let msgs = [
+            mail("o", "", "Mon, 2 Nov 2026 10:00:00 +0000", "Here is the handover plan.", true),
+            mail("r", "In-Reply-To: <o@x>\r\n", "Tue, 3 Nov 2026 10:00:00 +0000", "Thanks, looks good.\n\nOn Mon, Ana wrote:\n> Here is the handover plan.", true),
+            mail("n", "In-Reply-To: <r@x>\r\n", "Wed, 4 Nov 2026 10:00:00 +0000", "Separate handover note from me.", false),
+        ];
+        let mut ids = Vec::new();
+        for (uid, raw) in msgs.iter().enumerate() {
+            ids.push(st.insert_message(&crate::store::NewMessage { account_id: a.id, folder: "INBOX".into(), uid: Some(uid as u32 + 1), pop_uidl: None, meta: parse_meta(raw), seen: true, flagged: false, size: 1, raw: Some(raw.clone()) }).unwrap());
+        }
+        let key = st.message(ids[0]).unwrap().unwrap().thread_key;
+        let hits = |q: &str| own_hits(&st, a.id, &key, &[ids[2], ids[1], ids[0]], q).unwrap();
+        assert_eq!(hits("has:pdf"), [ids[0]], "the reply only re-sent the same file");
+        assert_eq!(hits("has:attachment:pdf handover"), [ids[0]]);
+        assert_eq!(hits("handover"), [ids[2], ids[0]], "the reply only quotes it; the newest says it itself");
+        assert_eq!(hits("looks good"), [ids[1]]);
+        assert_eq!(hits("nowhere-to-be-found"), [ids[2], ids[1], ids[0]], "nothing left: the search's own matches stand");
     }
 }

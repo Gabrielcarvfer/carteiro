@@ -1127,6 +1127,8 @@ struct SearchHits {
 fn search_hits(state: State<'_, AppState>, account_id: i64, folder: String, thread_key: String, query: String) -> Res<SearchHits> {
     let st = lock(&state)?;
     let ids = st.search_hits(account_id, &folder, &thread_key, &query).map_err(err)?;
+    // The originals, not replies that only quote them or re-send their files.
+    let ids = ops::own_hits(&st, account_id, &thread_key, &ids, &query).map_err(err)?;
     let mut message_ids = Vec::new();
     for id in ids {
         if let Some(m) = st.message(id).map_err(err)? {
