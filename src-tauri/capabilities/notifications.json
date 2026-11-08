@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "notifications",
+  "description": "Notification plugin (not used on Linux, which notifies through gdbus)",
+  "windows": ["main"],
+  "platforms": ["windows", "macOS", "android", "iOS"],
+  "permissions": ["notification:default"]
+}

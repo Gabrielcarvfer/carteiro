@@ -1,0 +1,18 @@
+# Supply-chain policy, enforced in CI by cargo-deny.
+
+[advisories]
+version = 2
+# Fail on any crate with a RustSec security advisory or that was yanked.
+yanked = "deny"
+
+[bans]
+wildcards = "deny"
+# Path dependencies between our own (unpublished) crates are fine.
+allow-wildcard-paths = true
+multiple-versions = "warn"
+
+[sources]
+# Only crates.io; no git dependencies or alternative registries.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
