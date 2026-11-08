@@ -685,8 +685,24 @@ pub struct ExportReport {
 /// A file/folder name that is safe on every OS.
 pub fn safe_file_name(s: &str) -> String {
     let cleaned: String = s.chars().map(|c| if c.is_control() || "/\\:*?\"<>|".contains(c) { '_' } else { c }).collect();
-    let trimmed = cleaned.trim().trim_matches('.').to_string();
-    if trimmed.is_empty() { "_".into() } else { trimmed }
+    let mut name = cleaned.trim().trim_matches('.').to_string();
+    // Room for " (999)" within the 255-byte limit of common file systems.
+    while name.len() > 200 {
+        let keep_ext = name.rsplit_once('.').map(|(_, e)| e.len() + 1).filter(|n| *n <= 16).unwrap_or(0);
+        let mut cut = name.len() - keep_ext - 1;
+        while !name.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        name = format!("{}{}", &name[..cut], &name[name.len() - keep_ext..]);
+    }
+    // Windows device names (CON, NUL, COM1...) aren't files, with any extension.
+    let stem = name.split('.').next().unwrap_or("").trim_end().to_ascii_uppercase();
+    let device = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$")
+        || (stem.len() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT")) && stem.as_bytes()[3].is_ascii_digit());
+    if device {
+        name.insert(0, '_');
+    }
+    if name.is_empty() { "_".into() } else { name }
 }
 
 /// "From " line date (asctime, UTC): "Sun Nov  8 01:12:30 2026".
@@ -883,5 +899,34 @@ mod quote_tests {
         assert_eq!(missing_quote_levels(&refs, &have(&["root", "b"]), true), 0, "a gap further up doesn't matter: b quotes it");
         assert_eq!(missing_quote_levels(&[], &have(&[]), true), u32::MAX, "a quote without references: show it");
         assert_eq!(missing_quote_levels(&[], &have(&[]), false), 0);
+    }
+}
+
+#[cfg(test)]
+mod file_name_tests {
+    use super::safe_file_name;
+
+    #[test]
+    fn attachment_names_cannot_escape_or_name_devices() {
+        for (hostile, expected) in [
+            ("../../../../home/user/.bashrc", "_.._.._.._home_user_.bashrc"),
+            ("..\\..\\Windows\\System32\\evil.dll", "_.._Windows_System32_evil.dll"),
+            ("/etc/passwd", "_etc_passwd"),
+            ("C:\\Users\\Public\\x.txt", "C__Users_Public_x.txt"),
+            ("...", "_"),
+            ("report.pdf\u{0}.exe", "report.pdf_.exe"),
+            ("CON", "_CON"),
+            ("nul.txt", "_nul.txt"),
+            ("com1.pdf", "_com1.pdf"),
+            ("LPT9", "_LPT9"),
+            ("console.log", "console.log"),
+        ] {
+            let got = safe_file_name(hostile);
+            assert_eq!(got, expected, "{hostile:?}");
+            assert!(!got.contains('/') && !got.contains('\\') && !got.starts_with('.'), "{hostile:?} -> {got:?}");
+        }
+        let long = format!("{}.pdf", "é".repeat(300));
+        let got = safe_file_name(&long);
+        assert!(got.len() <= 200 && got.ends_with(".pdf"), "{} bytes", got.len());
     }
 }

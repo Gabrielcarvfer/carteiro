@@ -642,7 +642,9 @@ function renderReader() {
 
 // ---- reply / forward ---------------------------------------------------------
 
-const prefixed = (p, s) => (new RegExp(`^${p}:`, "i").test(s) ? s : `${p}: ${s}`);
+// Reply/forward subjects: line breaks (hidden in an encoded subject) would be
+// refused when sending, so they become spaces.
+const prefixed = (p, s) => { s = s.replace(/[\r\n]+/g, " "); return new RegExp(`^${p}:`, "i").test(s) ? s : `${p}: ${s}`; };
 const quoteBody = (m) => `\n\n-----\nOn ${longDate(m.date)}, ${m.from.name || m.from.email} wrote:\n` + m.body_text.split("\n").map((l) => `> ${l}`).join("\n");
 const msgById = (el) => S.messages.find((m) => m.id === +el.dataset.id);
 

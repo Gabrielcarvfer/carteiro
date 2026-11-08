@@ -259,6 +259,7 @@ impl Engine {
             self.dir.join("freshclam.log").display()
         );
         std::fs::write(&conf, text).map_err(|e| e.to_string())?;
+        mail_core::scan::fresh_install_id(&self.db_dir().join("freshclam.dat"));
         let first = !self.has_db();
         if first {
             self.set("updating", "Downloading virus signatures (about 300 MB, first run only)…");

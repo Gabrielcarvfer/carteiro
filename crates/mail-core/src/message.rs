@@ -515,3 +515,25 @@ mod body_tests {
         assert_eq!(alt.html.as_deref().map(str::trim), Some("<p>Hi</p>"));
     }
 }
+
+#[cfg(test)]
+mod injection_tests {
+    use super::*;
+
+    #[test]
+    fn encoded_line_breaks_never_become_headers() {
+        // "Invoice\r\nBcc: attacker@evil.example", hidden in an encoded word.
+        let raw = b"From: a@x.org\r\nSubject: =?UTF-8?B?SW52b2ljZQ0KQmNjOiBhdHRhY2tlckBldmlsLmV4YW1wbGU=?=\r\n\r\nbody";
+        let meta = parse_meta(raw);
+        let from = Addr { name: String::new(), email: "me@x.org".into() };
+        let to = [Addr { name: String::new(), email: "a@x.org".into() }];
+        let out = Outgoing { from: &from, to: &to, cc: &[], subject: &meta.subject, text: "hi", in_reply_to: None, references: &[] };
+        match build_message(&out) {
+            Err(_) => {}
+            Ok((_, msg)) => {
+                let headers = String::from_utf8_lossy(&msg).split("\r\n\r\n").next().unwrap_or("").to_ascii_lowercase();
+                assert!(!headers.lines().any(|l| l.starts_with("bcc:")), "injected header: {headers}");
+            }
+        }
+    }
+}

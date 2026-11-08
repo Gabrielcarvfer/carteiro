@@ -44,6 +44,33 @@ impl Default for ScannerConfig {
     }
 }
 
+/// freshclam sends a per-install UUID (stored in freshclam.dat) in its
+/// User-Agent with every update, letting the update servers link all of a
+/// user's updates. ClamAV has no option to turn it off, so a fresh random
+/// UUID replaces it before each run; the file's other state (the CDN's
+/// rate-limit cooldown) is kept.
+pub fn fresh_install_id(dat: &std::path::Path) {
+    let Ok(mut data) = std::fs::read(dat) else { return };
+    let is_uuid = |w: &[u8]| {
+        w.len() == 36
+            && w.iter().enumerate().all(|(i, b)| if [8, 13, 18, 23].contains(&i) { *b == b'-' } else { b.is_ascii_hexdigit() })
+    };
+    let Some(at) = data.windows(36).position(is_uuid) else { return };
+    let mut r = [0u8; 16];
+    if ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut r).is_err() {
+        return;
+    }
+    r[6] = (r[6] & 0x0f) | 0x40; // version 4
+    r[8] = (r[8] & 0x3f) | 0x80; // RFC 4122 variant
+    let hex: String = r.iter().map(|b| format!("{b:02x}")).collect();
+    let uuid = format!("{}-{}-{}-{}-{}", &hex[0..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..32]);
+    data[at..at + 36].copy_from_slice(uuid.as_bytes());
+    let tmp = dat.with_extension("dat.new");
+    if std::fs::write(&tmp, &data).is_ok() {
+        let _ = std::fs::rename(&tmp, dat);
+    }
+}
+
 const CHUNK: usize = 64 * 1024;
 
 pub async fn scan(cfg: &ScannerConfig, data: &[u8]) -> Verdict {
@@ -179,5 +206,29 @@ mod tests {
         let cfg = ScannerConfig::default();
         assert!(cfg.block_when_unavailable);
         assert!(matches!(scan(&cfg, b"x").await, Verdict::NotScanned { .. }));
+    }
+}
+
+#[cfg(test)]
+mod install_id_tests {
+    #[test]
+    fn freshclam_install_id_is_replaced_and_the_rest_kept() {
+        let dir = std::env::temp_dir().join(format!("carteiro-dat-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dat = dir.join("freshclam.dat");
+        let mut orig = vec![1u8, 2, 3, 0];
+        orig.extend_from_slice(b"77f2fa98-b811-4390-a602-4d82c30dba9c");
+        orig.extend_from_slice(&[0, 9, 9, 9, 42]); // cooldown state etc.
+        std::fs::write(&dat, &orig).unwrap();
+        super::fresh_install_id(&dat);
+        let after = std::fs::read(&dat).unwrap();
+        assert_eq!(after.len(), orig.len());
+        assert_eq!(&after[..4], &orig[..4]);
+        assert_eq!(&after[40..], &orig[40..], "the rest of the state is kept");
+        let id = std::str::from_utf8(&after[4..40]).unwrap();
+        assert_ne!(id, "77f2fa98-b811-4390-a602-4d82c30dba9c");
+        assert_eq!(&id[14..15], "4", "a v4 UUID: {id}");
+        super::fresh_install_id(&dir.join("missing.dat")); // no file: nothing to do
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

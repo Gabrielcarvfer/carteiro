@@ -84,6 +84,18 @@ scripts/               ClamAV fetch/build, local test mail server, wire check
 
 **Local files.** On Linux, the mail cache, calendars and exports are readable only by your user (folder `0700`, files `0600`).
 
+**Penetration tests** (local test server and fake accounts only):
+- **Man in the middle** (`tests/pentest_tls.rs`, against real `openssl s_server` instances): self-signed, wrong-host and expired certificates and TLS 1.0/1.1-only servers are all refused; a correct server connects.
+- **Hostile email, opened in the Android app** with a listener recording any request that got out:
+  - HTML in the subject, sender name, attachment name and folder name;
+  - scripts, event handlers, SVG, frames, objects, forms, `meta refresh`, `<base>`, CSS imports, fonts and backgrounds, `srcset`, media, and `javascript:`/`data:` links;
+  - breaking out of the mail frame, and UTF-7 script.
+
+  Zero requests reached the listener, even after *Load images*, and nothing was injected into the app's page. Attachment names like `../../../../.bashrc` are saved inside the Downloads folder.
+- **Header injection:** line breaks hidden in an encoded subject can't add headers (such as `Bcc:`) to a reply.
+- **Local attackers:** the data folder is owner-only, there are no listening network ports (only a one-time loopback during sign-in), and the ClamAV socket is owner-only.
+- **Third parties:** ClamAV's updater sends a per-install UUID with every update; Carteiro replaces it with a fresh random one before each update, so updates can't be linked to each other.
+
 **Robustness.** `tests/robustness.rs` is a dependency-free mutation fuzzer. It feeds corrupted input to every parser, and to the IMAP/SMTP/POP3/HTTP clients through hostile fake servers. It found and fixed 4 crash bugs, including unbounded recursion on nested IMAP parentheses. Run it longer with `FUZZ_SCALE=50`.
 
 **Supply chain**
