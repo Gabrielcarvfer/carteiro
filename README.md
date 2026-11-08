@@ -21,6 +21,63 @@ The mail engine (`crates/mail-core`) is plain Rust with no UI dependency, so it 
 - **Sign-in:** passwords (the right user-name form is found automatically) or Google / Microsoft sign-in (OAuth 2.0 with PKCE).
 - **Your data:** keep the last day / week / month / 2 months / 6 months / year / all mail offline; save all mail as `.mbox`; export and import settings (never including passwords).
 
+## Using Carteiro
+
+The left rail (the bottom bar on phones) switches between **Mail**, **Calendar** and **Contacts**. On a wide screen each section shows a list beside the open item; on a phone it shows one at a time, and Android's back gesture steps back.
+
+### Accounts
+
+- **Add an account:** at first start, or from Settings → *Manage accounts…*. Type your address. Gmail and Outlook / Microsoft 365 addresses offer **Sign in with Google / Microsoft**, which opens your browser. Any other provider takes a password; Carteiro finds the right server settings and user-name form, and you can set the IMAP/POP3 and SMTP servers by hand.
+- **More than one account:** the account menu at the top switches between them; *All inboxes* shows them together.
+
+### Mail
+
+- **Read:** messages are grouped into conversations, newest first. Older messages in a long thread stay folded until you open them, and quoted text is folded too.
+- **Write:** the compose button (the pencil on phones). The To, Cc and Bcc fields suggest addresses from your contacts as you type. Reply, Reply all and Forward are on each message.
+- **Act on messages:** flag, mark read or unread, archive, delete, and *Move to* any folder. With no connection, sending goes to the Outbox, and every action is replayed when you're back online.
+- **Filter:** the filter button limits the list to *Unread*, *Flagged*, *To me* or *Has attachments*. Tap the chip above the list to show everything again.
+- **Search:** the search box understands words and these terms, which combine:
+  `from:ana`, `to:bob`, `subject:invoice`, `has:attachment`, `is:unread`, `is:flagged`, `after:2026-11-01`, `before:2026-12-01`, and `from:"Ana Souza"` for phrases.
+- **Rules:** the Rules button (or *Create rule…* on a message) moves, flags or marks incoming mail by sender, recipient, subject or words, in the order you set. *Run rules on this folder now* applies them to mail already there.
+- **Images and safety:** remote images stay blocked until you choose *Load images*, and even then trackers stay blocked. A badge on each message says whether ClamAV has checked it; attachments can be saved only once they pass.
+- **Saved files:** attachments and exports go to **Downloads/Carteiro**, named with your local date and time.
+
+### Calendar
+
+- **Views:** day, week and month on a wide screen; an agenda on phones. Swipe sideways to change month or week, and scroll through the weeks.
+- **Events:** *New event* creates one (on phones, the + button); tap an event to edit it. Each event can have its own time zone; when it differs from yours, the event also shows your local time.
+- **Search:** the search box finds events by title, place or description.
+- **Calendars:** the menu (☰ on phones) lists your calendars with checkboxes to show or hide each one. *Add calendar* offers:
+  - Google and Microsoft calendars, brought in by those accounts automatically;
+  - any CalDAV server (Fastmail, iCloud, Nextcloud…) with its address, user name and password;
+  - a subscribed `.ics` link;
+  - public holidays for a country and, where they differ, a region;
+  - local calendars kept only on this device.
+- **Week start:** Settings → *Calendar*.
+
+### Contacts
+
+- **Browse:** contacts are listed A–Z. Tap a letter heading to see the whole alphabet and jump to any letter that has contacts. The search box finds names and addresses.
+- **Your contacts:** *New* creates one; open a contact to edit or delete it. Tapping an email address starts a message to it.
+- **Import from Gmail, Outlook or Thunderbird:** export your contacts there, then use *Import* here:
+  - **Gmail** (contacts.google.com → Export): *vCard* or *Google CSV*;
+  - **Outlook** (People → Manage → Export contacts): CSV;
+  - **Thunderbird** (Address Book → Tools → Export): vCard, CSV or LDIF.
+
+  A contact that matches one you already have (same address or phone) is merged into it instead of duplicated.
+- **Export:** saves every contact as one `.vcf` file in Downloads/Carteiro.
+- **Address books that stay in sync:** Google and Microsoft accounts bring their contacts automatically. The address-book button adds any CardDAV server (Fastmail, iCloud, Nextcloud, mailbox.org…). Synced contacts are read-only here: change them on the service and they update at the next sync. Accounts signed in before contacts existed need one fresh sign-in to grant access.
+
+### Settings
+
+- **Background:** how often to check for mail; notifications for new mail; Carteiro keeps syncing from the tray when its window is closed.
+- **Malware scanning:** turn ClamAV on or off, update its signatures, or use your own `clamd`.
+- **Privacy:** refresh the tracker list now (it also updates daily).
+- **Your data:** how much mail to keep offline (from the last day to all of it); save all mail as `.mbox`; export or import your settings (passwords are never included).
+- **Updates:** turn off automatic installation, check now, or install now.
+- **About:** the version, and the licenses of the bundled software.
+- The sun/moon button switches between light and dark.
+
 ## Layout
 
 ```
