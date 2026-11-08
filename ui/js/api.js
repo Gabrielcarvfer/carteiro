@@ -47,6 +47,7 @@ export const api = {
   sync: (accountId) => call("sync_account", { accountId }),
   folders: (accountId) => call("list_folders", { accountId }),
   threads: (accountId, folder, query, offset = 0, limit = 100) => call("list_threads", { accountId, folder, query, offset, limit }),
+  searchHits: (accountId, folder, threadKey, query) => call("search_hits", { accountId, folder, threadKey, query }),
   threadIds: (accountId, threadKey, folder) => call("thread_ids", { accountId, threadKey, folder }),
   loadOlder: (accountId, folder) => call("load_older", { accountId, folder }),
   openThread: (accountId, threadKey) => call("open_thread", { accountId, threadKey }),

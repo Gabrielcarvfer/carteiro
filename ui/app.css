@@ -531,3 +531,8 @@ h3.sect { font-size: 15px; margin: 18px 0 4px; }
 @media (max-width: 720px), (max-height: 520px) and (pointer: coarse) {
   .progress { left: 8px; right: 8px; width: auto; bottom: calc(64px + env(safe-area-inset-bottom)); }
 }
+
+/* opened from a search: the messages (and attachments) that matched */
+.card.hit { box-shadow: inset 3px 0 0 var(--accent); }
+.hit-tag { display: inline-flex; align-items: center; gap: 4px; margin: 8px 12px 0; padding: 1px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; color: var(--accent); background: var(--selected); }
+.att.hit { border-color: var(--accent); box-shadow: 0 0 0 2px var(--selected); }

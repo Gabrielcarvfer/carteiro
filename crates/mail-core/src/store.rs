@@ -721,10 +721,12 @@ impl Store {
     /// Conversations in a folder, newest first. `query` uses the search
     /// syntax in [`crate::search`]; free words also match the text of
     /// messages the virus scanner found clean.
-    pub fn list_threads(&self, account_id: i64, folder: &str, query: Option<&str>, limit: u32, offset: u32) -> Result<Vec<ThreadSummary>> {
-        let q = crate::search::parse(query.unwrap_or(""));
+    /// SQL conditions (" AND …") on `messages` for a search query, with its
+    /// values appended to `args` (numbered after what's there). None: the
+    /// query can't match anything.
+    fn search_cond(&self, account_id: i64, query: &str, args: &mut Vec<rusqlite::types::Value>) -> Result<Option<String>> {
+        let q = crate::search::parse(query);
         let mut cond = String::new();
-        let mut args: Vec<rusqlite::types::Value> = vec![account_id.into(), folder.to_string().into(), i64::from(limit).into(), i64::from(offset).into()];
         let mut arg = |v: rusqlite::types::Value| {
             args.push(v);
             format!("?{}", args.len())
@@ -747,7 +749,7 @@ impl Store {
                 // Never an empty pattern (it would match everything).
                 match self.get_account(account_id)? {
                     Some(acct) if !acct.email.is_empty() => acct.email,
-                    _ => return Ok(Vec::new()),
+                    _ => return Ok(None),
                 }
             } else {
                 t.clone()
@@ -778,6 +780,22 @@ impl Store {
         if let Some(t) = q.before {
             cond += &format!(" AND date < {}", arg(t.into()));
         }
+        Ok(Some(cond))
+    }
+
+    /// The messages of one conversation (in `folder`) that match a search,
+    /// newest first: where to look in a conversation the search found.
+    pub fn search_hits(&self, account_id: i64, folder: &str, thread_key: &str, query: &str) -> Result<Vec<i64>> {
+        let mut args: Vec<rusqlite::types::Value> = vec![account_id.into(), folder.to_string().into(), thread_key.to_string().into()];
+        let Some(cond) = self.search_cond(account_id, query, &mut args)? else { return Ok(Vec::new()) };
+        let mut st = self.conn.prepare(&format!("SELECT id FROM messages WHERE account_id = ?1 AND folder = ?2 AND thread_key = ?3 {cond} ORDER BY date DESC"))?;
+        let rows = st.query_map(rusqlite::params_from_iter(args.iter()), |r| r.get(0))?.collect::<rusqlite::Result<Vec<i64>>>()?;
+        Ok(rows)
+    }
+
+    pub fn list_threads(&self, account_id: i64, folder: &str, query: Option<&str>, limit: u32, offset: u32) -> Result<Vec<ThreadSummary>> {
+        let mut args: Vec<rusqlite::types::Value> = vec![account_id.into(), folder.to_string().into(), i64::from(limit).into(), i64::from(offset).into()];
+        let Some(cond) = self.search_cond(account_id, query.unwrap_or(""), &mut args)? else { return Ok(Vec::new()) };
         let sql = format!(
             "SELECT thread_key, MAX(date) AS last, COUNT(*), SUM(seen = 0), MAX(flagged), MAX(has_attachments)
              FROM messages WHERE account_id = ?1 AND folder = ?2 {cond}
@@ -2207,8 +2225,26 @@ mod tests {
         assert_eq!(found("has:image has:pptx"), ["deck"], "both required");
         assert_eq!(found("has:pdf report"), ["report"]);
         assert!(found("has:zip").is_empty());
+        // Inside a conversation: which message it is.
+        let deck = s.list_threads(a, "INBOX", Some("has:pptx"), 5, 0).unwrap().remove(0);
+        assert_eq!(s.search_hits(a, "INBOX", &deck.thread_key, "has:pptx").unwrap(), [deck.latest_id]);
+        assert!(s.search_hits(a, "INBOX", &deck.thread_key, "has:pdf").unwrap().is_empty());
         // Types stay known after the body is freed from the device.
         s.clear_bodies_before(a, i64::MAX).unwrap();
         assert_eq!(found("has:pdf"), ["report"]);
+    }
+
+    #[test]
+    fn search_points_at_the_message_inside_a_conversation() {
+        let (s, a) = store_with_account();
+        let root = insert(&s, a, 1, meta("r", &[], "Project", 100));
+        let mid = insert(&s, a, 2, meta("m", &["r"], "Re: Project", 200));
+        let last = insert(&s, a, 3, meta("l", &["m"], "Re: Project", 300));
+        s.set_text(mid, true, "notes\nhandover.pdf the handover checklist").unwrap();
+        s.set_text(root, true, "kickoff").unwrap();
+        let key = key_of(&s, root);
+        assert_eq!(s.search_hits(a, "INBOX", &key, "handover").unwrap(), [mid]);
+        assert_eq!(s.search_hits(a, "INBOX", &key, "project").unwrap(), [last, mid, root], "newest first");
+        assert!(s.search_hits(a, "INBOX", &key, "nothing-like-this").unwrap().is_empty());
     }
 }

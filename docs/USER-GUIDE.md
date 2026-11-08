@@ -19,6 +19,7 @@ The left rail (the bottom bar on phones) switches between **Mail**, **Calendar**
 - **Search:** the search box looks in messages and inside their attachments (PDF, Word, PowerPoint and Excel files, their LibreOffice counterparts, and text files), once ClamAV has found them clean. It understands words and these terms, which combine:
   `from:ana`, `to:bob`, `subject:invoice`, `has:attachment`, `is:unread`, `is:flagged`, `after:2026-11-01`, `before:2026-12-01`, and `from:"Ana Souza"` for phrases.
   Attachment types: `has:attachment:pdf` or just `has:pdf`; families `has:word`, `has:excel`, `has:powerpoint`, `has:image`, `has:calendar`, `has:zip`, `has:video`, `has:audio`; or any extension, like `has:dwg`. Types are known for messages whose content has been on this device.
+  Opening a conversation from a search opens the messages that matched, marked *Matches your search*, scrolls to the newest of them and highlights the attachments the search was about.
 - **Rules:** the Rules button (or *Create rule…* on a message) moves, flags or marks incoming mail by sender, recipient, subject or words, in the order you set. *Run rules on this folder now* applies them to mail already there.
 - **Images and safety:** remote images stay blocked until you choose *Load images*, and even then trackers stay blocked. A badge on each message says whether ClamAV has checked it; attachments can be saved only once they pass.
 - **Saved files:** attachments and exports go to **Downloads/Carteiro**, named with your local date and time.

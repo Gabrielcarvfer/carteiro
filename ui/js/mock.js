@@ -113,6 +113,13 @@ export async function mock(cmd, a) {
     case "sync_account": return { new_messages: 0, moved_by_rules: 0, folders: folders.length, errors: [] };
     case "list_folders": return folders;
     case "load_older": return 0;
+    case "search_hits": {
+      const words = a.query.toLowerCase().split(/\s+/).filter((w) => w && !w.includes(":"));
+      const exts = [...a.query.matchAll(/has:(?:attachment:)?(\w+)/gi)].map((x) => x[1].toLowerCase()).filter((x) => x !== "attachment");
+      const ms = (threads[a.threadKey] ?? []).filter((m) => words.every((w) => (m.subject + " " + m.body_text + " " + m.attachments.map((f) => f.name).join(" ")).toLowerCase().includes(w))
+        && exts.every((e) => m.attachments.some((f) => f.name.toLowerCase().endsWith("." + e))));
+      return { message_ids: ms.map((m) => m.message_id).reverse(), extensions: exts };
+    }
     case "thread_ids": return (threads[a.threadKey] ?? []).map((m) => m.id);
     case "list_threads": {
       if (a.folder !== "INBOX" || a.offset > 0) return [];

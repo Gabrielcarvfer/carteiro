@@ -14,6 +14,9 @@ export const S = {
   expanded: {}, showQuoted: {}, plain: {}, light: {}, images: {}, menuFor: null,
   openThreads: {}, children: {}, focusMsg: null,
   // Conversations picked for a group action (press and hold, or Ctrl-click).
+  // Messages of the open conversation that matched the search, and the
+  // attachment types it asked for.
+  hits: new Set(), hitExts: [],
   picked: new Set(),
   // Single messages picked inside a conversation (ref -> message ids), when
   // not all of it is picked.
@@ -322,10 +325,22 @@ async function openThread(ref, focusId = null) {
   S.loading = false;
   S.expanded = {};
   S.menuFor = null;
+  // Opened from a search: the messages that matched are opened, marked and
+  // scrolled to (with their matching attachments highlighted).
+  S.hits = new Set();
+  S.hitExts = [];
+  const query = listQuery();
+  if (query) {
+    const folder = S.threads.find((t) => t.ref === ref)?.folder ?? S.folder;
+    const h = await guard(api.searchHits(acct, folder, key, query));
+    S.hits = new Set(S.messages.filter((m) => h?.message_ids.includes(m.message_id)).map((m) => m.id));
+    S.hitExts = h?.extensions ?? [];
+    if (!focusId && S.hits.size) focusId = [...S.messages].reverse().find((m) => S.hits.has(m.id))?.id ?? null;
+  }
   // The newest message is open; other unread ones too, unless there are so
   // many that the conversation would be a wall of text.
   const unseen = S.messages.filter((m) => !m.seen).length;
-  S.messages.forEach((m, i) => (S.expanded[m.id] = i === S.messages.length - 1 || (!m.seen && unseen <= 3) || m.id === focusId));
+  S.messages.forEach((m, i) => (S.expanded[m.id] = (!S.hits.size && i === S.messages.length - 1) || (!m.seen && unseen <= 3) || m.id === focusId || S.hits.has(m.id)));
   S.focusMsg = focusId;
   S.children[ref] = S.messages;
   renderReader();
@@ -852,7 +867,8 @@ function renderMessage(m) {
   const suspicious = (m.warnings ?? []).some((w) => w.startsWith("A link"));
   const showHtml = m.body_html && !(S.plain[m.id] ?? suspicious);
   return html`
-    <article id="msg-${m.id}" class="card ${open ? "" : "collapsed"} ${m.id === S.focusMsg ? "focus" : ""}">
+    <article id="msg-${m.id}" class="card ${open ? "" : "collapsed"} ${m.id === S.focusMsg ? "focus" : ""} ${S.hits?.has(m.id) ? "hit" : ""}">
+      ${S.hits?.has(m.id) ? html`<div class="hit-tag">${icon("search", 13)} Matches your search</div>` : ""}
       <div class="msg-head" data-click="toggle-msg" data-id="${m.id}">
         ${avatar(name, 36)}
         <div class="who">
@@ -889,7 +905,7 @@ function renderMessage(m) {
               ${m.quoted_text ? quotedPlain(m) : ""}
               ${m.body_html ? html`<button class="linkish" data-click="plain" data-id="${m.id}">Show formatted</button>` : ""}`}
         </div>
-        ${m.attachments.length ? html`<div class="attachments">${m.attachments.map((a, i) => html`<div class="att ${a.danger ? "danger" : m.attachments_blocked ? "locked" : "savable"}" title="${a.danger ?? (m.verdict.status === "infected" ? `Blocked: ClamAV found ${m.verdict.signature}` : m.attachments_blocked ? "Blocked until ClamAV has checked this message" : `Checked by ClamAV. Save ${a.name} to Downloads (it's scanned again on its own first)`)}"
+        ${m.attachments.length ? html`<div class="attachments">${m.attachments.map((a, i) => html`<div class="att ${a.danger ? "danger" : m.attachments_blocked ? "locked" : "savable"} ${S.hits?.has(m.id) && isHitAttachment(a) ? "hit" : ""}" title="${a.danger ?? (m.verdict.status === "infected" ? `Blocked: ClamAV found ${m.verdict.signature}` : m.attachments_blocked ? "Blocked until ClamAV has checked this message" : `Checked by ClamAV. Save ${a.name} to Downloads (it's scanned again on its own first)`)}"
           ${a.danger || m.attachments_blocked ? "" : raw(`role="button" tabindex="0" data-click="save-att" data-id="${m.id}" data-index="${i}"`)}>
           ${icon(a.danger ? "junk" : "clip", 14)} <span class="ellipsis">${a.name}</span> <span class="muted small">${bytes(a.size)}</span>
           ${a.danger ? html`<span class="tag">dangerous type</span>` : m.verdict.status === "infected" ? html`<span class="tag">malware</span>` : m.attachments_blocked ? html`<span class="tag muted">not scanned yet</span>` : html`<span class="tag ok">scanned</span>`}</div>`)}</div>` : ""}
@@ -910,6 +926,15 @@ function inviteCard(e) {
 document.addEventListener("rsvp-changed", ({ detail }) => {
   for (const m of S.messages) for (const e of m.invites ?? []) if (e.id === detail.id) e.rsvp = detail.rsvp;
 });
+
+// An attachment the search was about: its type was asked for (has:pdf), or
+// its name contains a searched word.
+function isHitAttachment(a) {
+  const ext = (a.name.split(".").pop() ?? "").toLowerCase();
+  if (S.hitExts.includes(ext)) return true;
+  const words = (S.query ?? "").toLowerCase().split(/\s+/).filter((w) => w && !w.includes(":"));
+  return words.some((w) => a.name.toLowerCase().includes(w));
+}
 
 function renderReader() {
   const ms = S.messages;

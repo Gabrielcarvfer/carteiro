@@ -1114,6 +1114,29 @@ fn thread_ids(state: State<'_, AppState>, account_id: i64, thread_key: String, f
     lock(&state)?.thread_message_ids(account_id, &thread_key, folder.as_deref()).map_err(err)
 }
 
+#[derive(Serialize)]
+struct SearchHits {
+    /// Message-IDs of the matching messages, newest first.
+    message_ids: Vec<String>,
+    /// Attachment extensions the search asked for (has:pdf…), to highlight.
+    extensions: Vec<String>,
+}
+
+/// Where a search matched inside one conversation.
+#[tauri::command]
+fn search_hits(state: State<'_, AppState>, account_id: i64, folder: String, thread_key: String, query: String) -> Res<SearchHits> {
+    let st = lock(&state)?;
+    let ids = st.search_hits(account_id, &folder, &thread_key, &query).map_err(err)?;
+    let mut message_ids = Vec::new();
+    for id in ids {
+        if let Some(m) = st.message(id).map_err(err)? {
+            message_ids.push(m.message_id);
+        }
+    }
+    let extensions = mail_core::search::parse(&query).attachment_types.concat();
+    Ok(SearchHits { message_ids, extensions })
+}
+
 /// Lists older messages of a folder (the first sync lists the latest only).
 #[tauri::command]
 async fn load_older(state: State<'_, AppState>, account_id: i64, folder: String) -> Res<usize> {
@@ -1450,6 +1473,7 @@ pub fn run() {
             download_offline_now,
             load_older,
             thread_ids,
+            search_hits,
             export_mail,
             open_link,
             save_attachment,

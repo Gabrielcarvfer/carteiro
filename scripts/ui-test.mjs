@@ -189,6 +189,18 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 860, false], ["phone", 39
   }
 
   await page(w, h, mobile);
+  await test("opening a search result shows the message that matched", async () => {
+    await js(`(() => { const i = [...document.querySelectorAll("[data-input=search]")].find((x) => x.offsetParent); i.value = "has:pdf 2pm"; i.dispatchEvent(new Event("input", { bubbles: true })); })()`);
+    await sleep(500);
+    await clickText(".item", "Q3 planning"); await sleep(800);
+    const hits = await js(`[...document.querySelectorAll("#reader .card.hit")].map((c) => c.id)`);
+    expect(hits.length === 1, `hits: ${hits}`);
+    expect(await js(`!!document.querySelector("#reader .card.hit .hit-tag")`), "no marker");
+    expect(await js(`[...document.querySelectorAll("#reader .card.hit .att.hit")].map((x) => x.textContent).join()`).then((t) => t.includes("agenda.pdf")), "matching attachment not highlighted");
+    expect(await js(`document.querySelectorAll("#reader .card.collapsed").length`) === 2, "other messages should stay closed");
+  });
+
+  await page(w, h, mobile);
   await test("scrolling to the end asks for older mail", async () => {
     await js(`(() => { const el = document.querySelector("#threads"); el.style.height = "200px"; el.scrollTop = el.scrollHeight; el.dispatchEvent(new Event("scroll")); })()`);
     await sleep(500);
