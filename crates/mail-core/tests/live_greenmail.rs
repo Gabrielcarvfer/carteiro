@@ -247,3 +247,53 @@ async fn offline_actions_replay_on_the_server() {
     let trash = fresh.lock().unwrap().folder_by_special(b2.id, "trash").unwrap().map(|t| t.name).unwrap_or_else(|| "Trash".into());
     assert!(in_folder(&trash).iter().any(|x| x.subject == format!("{tag} delete")), "deleted to Trash on the server");
 }
+
+/// Fetches the bodies of a conversation (scanning off: the scan is tested
+/// elsewhere) and returns their raw bytes.
+async fn raw_of(store: &Mutex<Store>, a: &Account, user: &str, subject: &str) -> Vec<Vec<u8>> {
+    let threads = store.lock().unwrap().list_threads(a.id, "INBOX", Some(subject), 10, 0).unwrap();
+    assert_eq!(threads.len(), 1, "{subject} arrived");
+    let off = mail_core::scan::ScannerConfig { enabled: false, ..Default::default() };
+    let views = ops::open_thread(store, a, &pw(user), &threads[0].thread_key, &off).await.unwrap();
+    views.iter().map(|v| store.lock().unwrap().raw(v.msg.id).unwrap().expect("downloaded")).collect()
+}
+
+#[tokio::test]
+#[ignore]
+async fn invitation_answer_reaches_the_organizer() {
+    let (astore, alice) = setup("alice", Protocol::Imap).await;
+    let (bstore, bob) = setup("bob", Protocol::Imap).await;
+    let tag = unique("Design review");
+    let uid = format!("live-{}", tag.replace(' ', "-"));
+    // Bob invites Alice to a weekly series, the way calendar apps do.
+    let ics = format!("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nUID:{uid}\r\nSEQUENCE:0\r\nORGANIZER:mailto:bob@carteiro.test\r\nATTENDEE;RSVP=TRUE:mailto:alice@carteiro.test\r\nSUMMARY:{tag}\r\nDTSTART;TZID=Europe/Lisbon:20271109T100000\r\nDTEND;TZID=Europe/Lisbon:20271109T110000\r\nRRULE:FREQ=WEEKLY;COUNT=3\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n");
+    let invite = format!("From: Bob <bob@carteiro.test>\r\nTo: alice@carteiro.test\r\nSubject: Invitation: {tag}\r\nMessage-ID: <{uid}@carteiro.test>\r\nMIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary=b\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nJoin us\r\n--b\r\nContent-Type: text/calendar; method=REQUEST\r\n\r\n{ics}--b--\r\n");
+    mail_core::smtp::send_mail(&bob.smtp, bob.smtp_user(), &pw("bob"), &bob.email, &["alice@carteiro.test".into()], invite.as_bytes()).await.unwrap();
+
+    sync::sync_account(&astore, &alice, &pw("alice")).await.unwrap();
+    let raw = raw_of(&astore, &alice, "alice", &tag).await.remove(0);
+    let msg = astore.lock().unwrap().list_threads(alice.id, "INBOX", Some(&tag), 1, 0).unwrap()[0].latest_id;
+    let now = mail_core::ical::parse_datetime("20271101T000000Z").unwrap().0;
+    let touched = mail_core::invites::import(&mut astore.lock().unwrap(), msg, "bob@carteiro.test", &raw, now).unwrap();
+    assert_eq!(touched, std::slice::from_ref(&uid));
+
+    // Alice won't make the second week, and tells Bob.
+    let cal = astore.lock().unwrap().invitations_calendar().unwrap();
+    let weeks: Vec<_> = astore.lock().unwrap().events_between(0, i64::MAX / 2).unwrap().into_iter().filter(|e| e.calendar_id == cal && e.remote_id == uid).collect();
+    assert_eq!(weeks.len(), 3);
+    astore.lock().unwrap().set_rsvp(weeks[1].id, "no").unwrap();
+    assert_eq!(ops::send_rsvp(&astore, &alice, &pw("alice"), weeks[1].id).await.unwrap(), SendResult::Sent);
+
+    sync::sync_account(&bstore, &bob, &pw("bob")).await.unwrap();
+    let reply = raw_of(&bstore, &bob, "bob", &format!("Declined: {tag}")).await.remove(0);
+    let parts = mail_core::invites::calendar_parts(&reply);
+    assert_eq!(parts.len(), 1, "a calendar reply Bob's calendar can read");
+    let r = &parts[0];
+    assert_eq!(mail_core::ical::calendar_method(r), "REPLY");
+    assert!(r.contains(&format!("UID:{uid}")), "{r}");
+    assert!(r.contains("ATTENDEE;PARTSTAT=DECLINED;CN=\"alice\":mailto:alice@carteiro.test"), "{r}");
+    assert!(r.contains("RECURRENCE-ID;TZID=Europe/Lisbon:20271116T100000"), "only the second week: {r}");
+    // Answers are private until sent: the other weeks have none.
+    let others: Vec<String> = astore.lock().unwrap().events_between(0, i64::MAX / 2).unwrap().into_iter().filter(|e| e.remote_id == uid).map(|e| e.rsvp).collect();
+    assert_eq!(others, ["", "no", ""]);
+}

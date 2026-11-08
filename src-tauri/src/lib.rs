@@ -783,6 +783,17 @@ fn sync_phone_contacts(state: State<'_, AppState>, contacts: Vec<(String, Contac
 
 /// Your own answer to an event: "yes", "maybe", "no" or "". Only noted on
 /// this device; the organizer and other guests are never told.
+/// Sends your answer for one event to its organizer, from the account the
+/// invitation came to. Only when you press "Send answer".
+#[tauri::command]
+async fn send_rsvp(state: State<'_, AppState>, event_id: i64) -> Res<ops::SendResult> {
+    let s = state.inner();
+    let account_id = ops::invite_account(&s.store, event_id).map_err(err)?.or_else(|| lock(s).ok()?.list_accounts().ok()?.first().map(|a| a.id));
+    let account_id = account_id.ok_or("Add an account to send answers")?;
+    let (account, cred) = credential(s, account_id).await?;
+    ops::send_rsvp(&s.store, &account, &cred, event_id).await.map_err(err)
+}
+
 /// Removes dates of a repeating event laid out on this device (invitations):
 /// those starting in [from, to), or all of them when both are absent.
 #[tauri::command]
@@ -1385,6 +1396,7 @@ pub fn run() {
             preview_ics,
             add_ics,
             remove_series,
+            send_rsvp,
             set_utc_offset,
             restore_upload,
             restore_backup,
@@ -1448,3 +1460,24 @@ pub fn run() {
         });
 }
 
+#[cfg(test)]
+mod schedule_tests {
+    use super::*;
+
+    #[test]
+    fn checks_often_in_working_hours_rarely_outside() {
+        let cfg = AppSettings::default();
+        // 2026-11-09 was a Monday.
+        let at = |day: i64, h: i64, m: i64| mail_core::ical::days_from_civil(2026, 11, 9 + day as u32) * 86400 + h * 3600 + m * 60;
+        assert_eq!(sync_interval(&cfg, at(0, 9, 0)), 15, "Monday morning");
+        assert_eq!(sync_interval(&cfg, at(4, 17, 59)), 15, "Friday, just before 18:00");
+        assert_eq!(sync_interval(&cfg, at(4, 18, 0)), 60, "Friday evening");
+        assert_eq!(sync_interval(&cfg, at(0, 7, 59)), 60, "before work");
+        assert_eq!(sync_interval(&cfg, at(5, 11, 0)), 60, "Saturday");
+        let never = AppSettings { off_hours_minutes: 0, ..AppSettings::default() };
+        assert_eq!(sync_interval(&never, at(6, 11, 0)), 0, "Sunday: only when asked");
+        // Settings saved before working hours existed (old 3-minute default).
+        let old: AppSettings = serde_json::from_str(r#"{"sync_minutes":3}"#).unwrap();
+        assert_eq!(old.schedule_version, 0, "so the one-time upgrade runs");
+    }
+}

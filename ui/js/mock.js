@@ -31,7 +31,7 @@ const threads = {
     msg(2, "t1", ["Bruno Lima", "bruno@example.com"], "RE: Q3 planning", "Thursday works for me. 2pm?", 3600),
     { ...msg(3, "t1", ["Ana Souza", "ana@example.com"], "RE: Q3 planning", "2pm it is, I'll send an invite.", 600, false),
       has_attachments: true, attachments: [{ name: "agenda.pdf", mime: "application/pdf", size: 81234, danger: null }, { name: "invite.ics", mime: "text/calendar", size: 1200, danger: null }],
-      invites: [{ id: 8, calendar_id: 3, title: "Q3 planning", start: Math.floor(now / 86400) * 86400 + 2 * 86400 + 14 * 3600, end: Math.floor(now / 86400) * 86400 + 2 * 86400 + 15 * 3600, all_day: false, floating: false, recurring: true, tzid: "", location: "Room 4", description: "", rsvp: "" }] },
+      invites: [{ id: 8, calendar_id: 3, remote_id: "q3-series", title: "Q3 planning", start: Math.floor(now / 86400) * 86400 + 2 * 86400 + 14 * 3600, end: Math.floor(now / 86400) * 86400 + 2 * 86400 + 15 * 3600, all_day: false, floating: false, recurring: true, tzid: "", location: "Room 4", description: "", rsvp: "" }] },
   ],
   t3: [{ ...msg(6, "t3", ["Billing", "billing@mybank-secure.example"], "Your account is suspended", "Please verify your account.", 900, false,
     "<p>Please <a href='https://mybank-secure.example.ru/login'>www.mybank.example</a> verify.</p>"),
@@ -157,6 +157,7 @@ export async function mock(cmd, a) {
       return null;
     case "preview_ics": return { method: "REQUEST", in_calendar: false, events: [{ title: "Q3 planning", start: Math.floor(now / 86400) * 86400 + 2 * 86400 + 14 * 3600, end: Math.floor(now / 86400) * 86400 + 2 * 86400 + 15 * 3600, all_day: false, floating: false, recurring: true, tzid: "", location: "Room 4" }] };
     case "add_ics": return 1;
+    case "send_rsvp": return "sent";
     case "remove_series": { const ev = events.find((e) => e.id === a.eventId); const before = events.length;
       events = events.filter((e) => !(e.title === ev.title && e.calendar_id === ev.calendar_id && e.start >= (a.from ?? -Infinity) && e.start < (a.to ?? Infinity))); return before - events.length; }
     case "set_utc_offset": case "sync_phone_contacts": return null;

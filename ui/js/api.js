@@ -110,6 +110,7 @@ export const api = {
   syncPhoneContacts: (contacts) => call("sync_phone_contacts", { contacts }),
   previewIcs: (messageId, index) => call("preview_ics", { messageId, index }),
   addIcs: (messageId, index) => call("add_ics", { messageId, index }),
+  sendRsvp: (eventId) => call("send_rsvp", { eventId }),
   removeSeries: (eventId, from, to) => call("remove_series", { eventId, from, to }),
   setRsvp: (eventId, rsvp) => call("set_rsvp", { eventId, rsvp }),
   setUtcOffset: () => call("set_utc_offset", { minutes: -new Date().getTimezoneOffset() }),

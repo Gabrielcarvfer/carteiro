@@ -125,11 +125,14 @@ function range() {
 // Your own answer to an event, shown on it: declined ones fade out.
 const rsvpClass = (e) => (e.rsvp ? `rsvp-${e.rsvp}` : "");
 export const RSVP = [["yes", "Going"], ["maybe", "Maybe"], ["no", "Not going"]];
-export function rsvpButtons(e) {
-  return html`<div class="rsvp" role="group" aria-label="Your answer">
+/// Your answer; for invitations also a button that sends it to the organizer
+/// (picking an answer alone tells nobody).
+export function rsvpButtons(e, invitation = isInvitation(e)) {
+  return html`<div class="rsvp-row"><div class="rsvp" role="group" aria-label="Your answer">
     ${RSVP.map(([v, l]) => html`<button class="btn ${e.rsvp === v ? "on" : ""}" data-click="rsvp" data-id="${e.id}" data-v="${v}" aria-pressed="${e.rsvp === v}">${l}</button>`)}
-  </div>`;
+  </div>${invitation ? html`<button class="btn primary send-rsvp" data-click="send-rsvp" data-id="${e.id}" ${e.rsvp ? "" : "disabled"} title="Send your answer for this date to the organizer">Send answer</button>` : ""}</div>`;
 }
+const isInvitation = (e) => !!e.remote_id && C.calendars.find((c) => c.id === e.calendar_id)?.remote_id === "invitations";
 
 /// "Mon, 16 Nov, 10:00–10:30" (or the dates of an all-day event), in local time.
 export function eventWhen(e) {
@@ -495,7 +498,7 @@ function openEditor(ev) {
           <label class="stack ev-tz" ${ev.all_day ? "hidden" : ""}><span>Time zone</span>
             <select name="tz" data-change="ev-when">${zones.map((z) => html`<option value="${z}" ${z === tz ? "selected" : ""}>${z === LOCAL_TZ ? `${z} (yours)` : z}</option>`)}</select></label>
           <p class="muted small tz-note" hidden></p>
-          ${ev.id ? html`<div class="stack"><span class="label">Will you go? <span class="muted small">(only noted here; nobody is told)</span></span>${rsvpButtons(ev)}</div>` : ""}
+          ${ev.id ? html`<div class="stack"><span class="label">Will you go? <span class="muted small">${isInvitation(ev) ? "(kept here unless you send it)" : "(only noted here)"}</span></span>${rsvpButtons(ev)}</div>` : ""}
           <label class="stack"><span>Location</span><input name="location" value="${ev.location ?? ""}" /></label>
           <label class="stack"><span>Notes</span><textarea name="description" rows="4">${ev.description ?? ""}</textarea></label>
           <div class="error" hidden></div>
@@ -877,7 +880,19 @@ on("click", "rsvp", async (el) => {
     b.classList.toggle("on", b.dataset.v === v);
     b.setAttribute("aria-pressed", b.dataset.v === v);
   }
+  for (const b of document.querySelectorAll(`[data-click=send-rsvp][data-id="${id}"]`)) b.disabled = !v;
   if (C.editing?.id === id) C.editing.rsvp = v;
   document.dispatchEvent(new CustomEvent("rsvp-changed", { detail: { id, rsvp: v } }));
   if (C.events) load();
+});
+
+on("click", "send-rsvp", async (el) => {
+  el.disabled = true;
+  el.textContent = "Sending…";
+  try {
+    const r = await api.sendRsvp(+el.dataset.id);
+    toast(r === "queued" ? "No connection: your answer is in the Outbox and goes out when you're back online" : "Your answer was sent to the organizer");
+  } catch (e) { toast(String(e)); }
+  el.disabled = false;
+  el.textContent = "Send answer";
 });

@@ -84,7 +84,10 @@ CREATE TABLE IF NOT EXISTS invite_series (
     sequence INTEGER NOT NULL DEFAULT 0,
     rsvp TEXT NOT NULL DEFAULT '',
     -- Dates you removed yourself, as JSON [[from, to], ...]: kept out of updates.
-    removed TEXT NOT NULL DEFAULT '[]'
+    removed TEXT NOT NULL DEFAULT '[]',
+    -- Who to answer, and from which of your accounts (the one it came to).
+    organizer TEXT NOT NULL DEFAULT '',
+    account_id INTEGER
 );
 -- Messages already checked for invitations, and the series they carried.
 CREATE TABLE IF NOT EXISTS invite_msgs (
@@ -396,6 +399,9 @@ impl Store {
         }
         if conn.prepare("SELECT removed FROM invite_series LIMIT 0").is_err() {
             conn.execute_batch("ALTER TABLE invite_series ADD COLUMN removed TEXT NOT NULL DEFAULT '[]'")?;
+        }
+        if conn.prepare("SELECT organizer FROM invite_series LIMIT 0").is_err() {
+            conn.execute_batch("ALTER TABLE invite_series ADD COLUMN organizer TEXT NOT NULL DEFAULT ''; ALTER TABLE invite_series ADD COLUMN account_id INTEGER;")?;
         }
         if conn.prepare("SELECT rsvp FROM events LIMIT 0").is_err() {
             conn.execute_batch("ALTER TABLE events ADD COLUMN rsvp TEXT NOT NULL DEFAULT ''")?;
@@ -1274,7 +1280,8 @@ impl Store {
     /// there (a delayed message). Your answer is kept.
     /// `by_hand`: you added it yourself, so dates you removed come back and
     /// an older version is accepted.
-    pub fn save_invite(&mut self, uid: &str, sender: &str, sequence: i64, instances: &[crate::ical::Event], by_hand: bool) -> Result<bool> {
+    #[allow(clippy::too_many_arguments)]
+    pub fn save_invite(&mut self, uid: &str, sender: &str, sequence: i64, instances: &[crate::ical::Event], by_hand: bool, organizer: &str, account: Option<i64>) -> Result<bool> {
         let cal = self.invitations_calendar()?;
         let sender = sender.to_lowercase();
         let existing: Option<(String, i64, String, String)> = self
@@ -1304,9 +1311,11 @@ impl Store {
             )?;
         }
         tx.execute(
-            "INSERT INTO invite_series (uid, sender, sequence, rsvp) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(uid) DO UPDATE SET sequence = max(sequence, excluded.sequence), removed = CASE WHEN ?5 THEN '[]' ELSE removed END",
-            params![uid, sender, sequence, rsvp, by_hand],
+            "INSERT INTO invite_series (uid, sender, sequence, rsvp, organizer, account_id) VALUES (?1, ?2, ?3, ?4, ?6, ?7)
+             ON CONFLICT(uid) DO UPDATE SET sequence = max(sequence, excluded.sequence), removed = CASE WHEN ?5 THEN '[]' ELSE removed END,
+                organizer = CASE WHEN excluded.organizer != '' THEN excluded.organizer ELSE organizer END,
+                account_id = coalesce(excluded.account_id, account_id)",
+            params![uid, sender, sequence, rsvp, by_hand, organizer.to_lowercase(), account],
         )?;
         tx.commit()?;
         Ok(true)
@@ -1363,6 +1372,16 @@ impl Store {
             self.conn.execute("UPDATE invite_series SET removed = ?1 WHERE uid = ?2", params![serde_json::to_string(&ranges)?, ev.remote_id])?;
         }
         Ok(n)
+    }
+
+    /// For answering an invitation: (organizer, sequence, account it came to).
+    pub fn invite_reply_info(&self, uid: &str) -> Result<Option<(String, i64, Option<i64>)>> {
+        Ok(self
+            .conn
+            .query_row("SELECT CASE WHEN organizer != '' THEN organizer ELSE sender END, sequence, account_id FROM invite_series WHERE uid = ?1", [uid], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .optional()?)
     }
 
     /// Whether a series is in the Invitations calendar right now.

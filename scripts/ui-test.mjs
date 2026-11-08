@@ -1,0 +1,149 @@
+// Interface tests: drives ui/ in headless Chromium against the mock backend
+// (ui/js/mock.js) and checks the features end to end, on a desktop-sized and
+// a phone-sized window. No packages needed: Node 22+ and a Chromium build.
+//
+//   node scripts/ui-test.mjs /path/to/chrome
+//
+// Serves ui/ itself on a free local port; exits non-zero on any failure.
+import { spawn } from "node:child_process";
+import { createServer } from "node:http";
+import { readFile } from "node:fs/promises";
+import { extname, join, normalize } from "node:path";
+
+const chrome = process.argv[2] ?? process.env.CHROME;
+if (!chrome) { console.error("usage: node scripts/ui-test.mjs /path/to/chrome"); process.exit(2); }
+const root = join(import.meta.dirname, "..", "ui");
+const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".json": "application/json" };
+const server = createServer(async (req, res) => {
+  let name = decodeURIComponent(new URL(req.url, "http://x").pathname);
+  if (name.endsWith("/")) name += "index.html";
+  const path = normalize(join(root, name));
+  if (!path.startsWith(root)) return res.writeHead(403).end();
+  try {
+    const body = await readFile(path);
+    res.writeHead(200, { "content-type": types[extname(path)] ?? "application/octet-stream" }).end(body);
+  } catch { res.writeHead(404).end(); }
+}).listen(0, "127.0.0.1");
+await new Promise((r) => server.on("listening", r));
+const url = `http://127.0.0.1:${server.address().port}/`;
+
+const port = 9400 + Math.floor(Math.random() * 400);
+const proc = spawn(chrome, ["--headless", "--disable-gpu", `--remote-debugging-port=${port}`, "--user-data-dir=" + join(process.env.TMPDIR ?? "/tmp", `carteiro-ui-test-${port}`), "about:blank"], { stdio: "ignore" });
+let targets;
+for (let i = 0; i < 50 && !targets; i++) {
+  await new Promise((r) => setTimeout(r, 200));
+  targets = await fetch(`http://127.0.0.1:${port}/json`).then((r) => r.json()).catch(() => null);
+}
+const ws = new WebSocket(targets.find((t) => t.type === "page").webSocketDebuggerUrl);
+await new Promise((r) => (ws.onopen = r));
+let id = 0; const pending = {}; const errors = [];
+ws.onmessage = (m) => { const d = JSON.parse(m.data); if (d.id) pending[d.id]?.(d); if (d.method === "Runtime.exceptionThrown") errors.push(d.params.exceptionDetails.exception?.description ?? d.params.exceptionDetails.text); };
+const send = (method, params = {}) => new Promise((r) => { const i = ++id; pending[i] = r; ws.send(JSON.stringify({ id: i, method, params })); });
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const js = async (e) => {
+  const r = await send("Runtime.evaluate", { expression: e, awaitPromise: true, returnByValue: true });
+  if (r.result.exceptionDetails) throw new Error(`${e}\n  ${r.result.exceptionDetails.exception?.description}`);
+  return r.result.result.value;
+};
+const click = (sel) => js(`(() => { const el = document.querySelector(${JSON.stringify(sel)}); if (!el) throw new Error("missing " + ${JSON.stringify(sel)}); el.click(); })()`);
+const clickText = (sel, text) => js(`(() => { const el = [...document.querySelectorAll(${JSON.stringify(sel)})].find((x) => x.textContent.includes(${JSON.stringify(text)})); if (!el) throw new Error("no " + ${JSON.stringify(sel)} + " with " + ${JSON.stringify(text)}); el.click(); })()`);
+await send("Runtime.enable");
+
+let failed = 0;
+async function test(name, fn) {
+  try { await fn(); console.log(`ok   ${name}`); }
+  catch (e) { failed++; console.log(`FAIL ${name}\n     ${String(e.message ?? e).split("\n").join("\n     ")}`); }
+}
+function expect(cond, what) { if (!cond) throw new Error(what); }
+async function page(width, height, mobile) {
+  await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile });
+  await send("Page.navigate", { url });
+  await sleep(1500);
+}
+
+for (const [label, w, h, mobile] of [["desktop", 1280, 860, false], ["phone", 390, 844, true]]) {
+  console.log(`# ${label}`);
+
+  await page(w, h, mobile);
+  await test("flag in an open conversation changes at once", async () => {
+    await clickText(".item", "Q3 planning"); await sleep(800);
+    await click("[data-click=conv][data-kind=flag]"); await sleep(100);
+    expect(await js(`!!document.querySelector("[data-click=conv][data-kind=unflag]")`), "flag button didn't switch");
+  });
+  await test("reply buttons have space below them", async () => {
+    expect(await js(`parseFloat(getComputedStyle(document.querySelector(".quick-reply")).marginBottom)`) >= 12, "no spacing");
+  });
+  await test("invitation card: answer, then send it", async () => {
+    expect(await js(`!!document.querySelector(".invite")`), "no invitation card");
+    expect(await js(`document.querySelector(".invite [data-click=send-rsvp]").disabled`), "send enabled before an answer");
+    await click(".invite [data-v=maybe]"); await sleep(300);
+    expect(await js(`document.querySelector(".invite .rsvp .on")?.textContent`) === "Maybe", "answer not shown");
+    await click(".invite [data-click=send-rsvp]"); await sleep(400);
+    expect(/sent to the organizer/.test(await js(`document.querySelector(".toast")?.textContent ?? ""`)), "no confirmation");
+  });
+  await test("tapping an .ics attachment asks before doing anything", async () => {
+    await clickText(".att", "invite.ics"); await sleep(500);
+    const opts = await js(`[...document.querySelectorAll(".ask [data-ask]")].map((b) => b.textContent)`);
+    expect(opts.includes("Add to calendar") && opts.includes("Save the file to Downloads"), `options: ${opts}`);
+    expect(await js(`!!document.querySelector(".ask .ics-list")`), "event not described");
+    await click(".ask [data-ask=add]"); await sleep(900);
+    expect(await js(`!document.querySelector("#calendar").hidden`), "calendar not shown after adding");
+  });
+
+  await page(w, h, mobile);
+  await test("small month marks days with events", async () => {
+    await click("[data-mode=calendar]"); await sleep(1000);
+    expect(await js(`document.querySelectorAll(".mini-grid .busy").length`) > 0, "no marked days");
+  });
+  await test("remove one date of a series, then the whole series", async () => {
+    await clickText("button", "Month"); await sleep(700);
+    const count = () => js(`[...document.querySelectorAll("[data-click=cal-open]")].filter((b) => b.textContent.includes("Weekly design review")).length`);
+    const before = await count();
+    expect(before >= 2, `series not shown (${before})`);
+    await clickText("[data-click=cal-open]", "Weekly design review"); await sleep(400);
+    await click("[data-click=ev-delete]"); await sleep(300);
+    await click(".ask [data-ask=one]"); await sleep(700);
+    expect(await count() === before - 1, "one date not removed");
+    await clickText("[data-click=cal-open]", "Weekly design review"); await sleep(400);
+    await click("[data-click=ev-delete]"); await sleep(300);
+    await click(".ask [data-ask=all]"); await sleep(700);
+    expect(await count() === 0, "series not removed");
+  });
+
+  await page(w, h, mobile);
+  await test("contacts: letter jump and deleting any contact", async () => {
+    await click("[data-mode=contacts]"); await sleep(800);
+    await click(".ct-letter"); await sleep(300);
+    expect(await js(`document.querySelectorAll(".ct-jumper .on").length`) > 0, "no letters to jump to");
+    await click(".ct-jumper .on[data-letter=B]"); await sleep(300);
+    expect(await js(`!document.querySelector(".ct-jumper")`), "jumper didn't close");
+    const n = await js(`document.querySelectorAll(".ct-item").length`);
+    await clickText(".ct-item", "Bob Stone"); await sleep(300); // a synced, read-only contact
+    await click("[data-click=ct-delete]"); await sleep(300);
+    expect(/won't come back/.test(await js(`document.querySelector(".ask p").textContent`)), "synced deletion not explained");
+    await click(".ask [data-ask=yes]"); await sleep(500);
+    expect(await js(`document.querySelectorAll(".ct-item").length`) === n - 1, "not deleted");
+  });
+
+  await page(w, h, mobile);
+  await test("settings: four sections, swiped and tapped", async () => {
+    await js(`document.querySelector("[data-click=settings]").click()`); await sleep(1000);
+    const titles = await js(`[...document.querySelectorAll("#modal .pivot-titles button")].map((b) => b.textContent)`);
+    expect(titles.join("|") === "general|security & privacy|your data|about", `titles: ${titles}`);
+    await js(`(() => { const p = document.querySelector("#modal .pivots"); p.scrollTo({ left: p.clientWidth, behavior: "instant" }); })()`); await sleep(400);
+    expect(await js(`document.querySelector("#modal .pivot-titles .on").textContent`) === "security & privacy", "swipe didn't change section");
+    await click("[data-click=pivot][data-k=about]"); await sleep(800);
+    expect(await js(`document.querySelector("#modal .pivot-titles .on").textContent`) === "about", "tap didn't change section");
+    expect(await js(`!document.querySelector("#modal [name=g-id]")`), "OAuth fields still there");
+    expect(await js(`document.querySelectorAll("#modal [name=work-day]:checked").length`) === 5, "working days not Mon-Fri");
+  });
+  await test("sign-in buttons hidden when the build has no app IDs", async () => {
+    expect(await js(`document.body.classList.contains("no-google") && document.body.classList.contains("no-microsoft")`), "not hidden");
+  });
+}
+
+if (errors.length) { failed++; console.log(`FAIL page errors:\n     ${errors.join("\n     ")}`); }
+proc.kill();
+server.close();
+console.log(failed ? `${failed} failed` : "all passed");
+process.exit(failed ? 1 : 0);

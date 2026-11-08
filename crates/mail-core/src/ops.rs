@@ -463,12 +463,18 @@ pub async fn send(store: &Mutex<Store>, account: &Account, password: &Credential
         text: &text,
         in_reply_to: parent.as_ref().map(|p| p.message_id.as_str()),
         references: &refs,
+        calendar: None,
     })?;
     let rcpts: Vec<String> = to.iter().chain(&cc).chain(&bcc).map(|a| a.email.clone()).collect();
-    match crate::smtp::send_mail(&account.smtp, account.smtp_user(), password, &account.email, &rcpts, &bytes).await {
+    deliver(store, account, password, &rcpts, bytes).await
+}
+
+/// Sends a built message, or keeps it in the Outbox when offline.
+async fn deliver(store: &Mutex<Store>, account: &Account, password: &Credential, rcpts: &[String], bytes: Vec<u8>) -> Result<SendResult> {
+    match crate::smtp::send_mail(&account.smtp, account.smtp_user(), password, &account.email, rcpts, &bytes).await {
         Ok(()) => {}
         Err(e) if is_offline(&e) => {
-            queue_outgoing(store, account, &rcpts, bytes)?;
+            queue_outgoing(store, account, rcpts, bytes)?;
             return Ok(SendResult::Queued);
         }
         Err(e) => return Err(e),
@@ -653,8 +659,44 @@ pub async fn preview_ics(store: &Mutex<Store>, message_id: i64, index: usize, sc
 pub async fn add_ics(store: &Mutex<Store>, message_id: i64, index: usize, scanner: &ScannerConfig) -> Result<usize> {
     let text = attachment_ics(store, message_id, index, scanner).await?;
     let mut st = lock(store)?;
-    let sender = st.message(message_id)?.map(|m| m.from.email).unwrap_or_default();
-    crate::invites::import_ics(&mut st, &sender, &text, crate::calendar::now())
+    let m = st.message(message_id)?;
+    let sender = m.as_ref().map(|m| m.from.email.clone()).unwrap_or_default();
+    crate::invites::import_ics(&mut st, &sender, &text, crate::calendar::now(), m.map(|m| m.account_id))
+}
+
+/// Sends your answer for one event (its date, in a series) to the
+/// organizer, as an invitation reply calendars understand. Only when you ask.
+pub async fn send_rsvp(store: &Mutex<Store>, account: &Account, password: &Credential, event_id: i64) -> Result<SendResult> {
+    let (ev, organizer, sequence) = {
+        let st = lock(store)?;
+        let ev = st.event(event_id)?.ok_or_else(|| Error::Other("Event not found".into()))?;
+        let (organizer, sequence, _) = st.invite_reply_info(&ev.remote_id)?.ok_or_else(|| Error::Other("Only invitations received by mail can be answered".into()))?;
+        (ev, organizer, sequence)
+    };
+    let (partstat, word) = match ev.rsvp.as_str() {
+        "yes" => ("ACCEPTED", "Accepted"),
+        "maybe" => ("TENTATIVE", "Tentative"),
+        "no" => ("DECLINED", "Declined"),
+        _ => return Err(Error::Other("Choose Going, Maybe or Not going first".into())),
+    };
+    if !organizer.contains('@') {
+        return Err(Error::Other("This invitation doesn't say who organized it".into()));
+    }
+    let instance = ev.event.recurring.then_some(&ev.event);
+    let ics = crate::ical::build_reply(&ev.remote_id, sequence, &ev.event.title, &organizer, &account.email, &account.name, partstat, instance, crate::calendar::now());
+    let from = Addr { name: account.name.clone(), email: account.email.clone() };
+    let to = [Addr { name: String::new(), email: organizer.clone() }];
+    let subject = format!("{word}: {}", ev.event.title);
+    let text = format!("{} has {} this invitation.", if account.name.is_empty() { &account.email } else { &account.name }, word.to_lowercase());
+    let (_, bytes) = build_message(&Outgoing { from: &from, to: &to, cc: &[], subject: &subject, text: &text, in_reply_to: None, references: &[], calendar: Some(&ics) })?;
+    deliver(store, account, password, &[organizer], bytes).await
+}
+
+/// The account an invitation came to (to answer from it).
+pub fn invite_account(store: &Mutex<Store>, event_id: i64) -> Result<Option<i64>> {
+    let st = lock(store)?;
+    let Some(ev) = st.event(event_id)? else { return Ok(None) };
+    Ok(st.invite_reply_info(&ev.remote_id)?.and_then(|i| i.2))
 }
 
 // ---- offline copy -------------------------------------------------------------

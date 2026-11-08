@@ -39,6 +39,9 @@ pub struct Event {
     pub sequence: i64,
     #[serde(skip)]
     pub cancelled: bool,
+    /// The organizer's address (ORGANIZER:mailto:…), lower-case.
+    #[serde(skip)]
+    pub organizer: String,
 }
 
 // ---- dates (proleptic Gregorian, no external crate) --------------------------
@@ -253,6 +256,11 @@ pub fn parse_events(ics: &str) -> Vec<Event> {
                         e.recurrence_id = parse_datetime(value).map(|x| x.0);
                     }
                     "EXDATE" => e.exdates.extend(value.split(',').filter_map(|v| parse_datetime(v).map(|x| x.0))),
+                    "ORGANIZER" => {
+                        let v = value.trim();
+                        let addr = v.get(..7).filter(|p| p.eq_ignore_ascii_case("mailto:")).map(|_| &v[7..]).unwrap_or(v);
+                        e.organizer = addr.trim().to_lowercase();
+                    }
                     "SEQUENCE" => e.sequence = value.trim().parse().unwrap_or(0),
                     "STATUS" => e.cancelled = value.trim().eq_ignore_ascii_case("CANCELLED"),
                     "DTSTART" => {
@@ -291,6 +299,43 @@ pub fn calendar_method(ics: &str) -> String {
         }
     }
     String::new()
+}
+
+/// Your answer to an invitation as an iTIP REPLY (RFC 5546), for the whole
+/// series or, with `instance`, one date of it (its start as stored: wall
+/// clock with `tzid`/floating, or UTC). `partstat` is ACCEPTED, TENTATIVE or
+/// DECLINED.
+#[allow(clippy::too_many_arguments)]
+pub fn build_reply(uid: &str, sequence: i64, summary: &str, organizer: &str, attendee: &str, attendee_name: &str, partstat: &str, instance: Option<&Event>, now: i64) -> String {
+    let clean = |s: &str| s.chars().filter(|c| !c.is_control()).collect::<String>();
+    let mut lines = vec![
+        "BEGIN:VCALENDAR".to_string(),
+        "PRODID:-//Carteiro//EN".into(),
+        "VERSION:2.0".into(),
+        "METHOD:REPLY".into(),
+        "BEGIN:VEVENT".into(),
+        format!("UID:{}", clean(uid)),
+        format!("SEQUENCE:{sequence}"),
+        format!("DTSTAMP:{}", fmt_utc(now)),
+        format!("ORGANIZER:mailto:{}", clean(organizer)),
+        format!("ATTENDEE;PARTSTAT={partstat};CN=\"{}\":mailto:{}", clean(attendee_name).replace('"', "'"), clean(attendee)),
+        format!("SUMMARY:{}", escape(&clean(summary))),
+    ];
+    if let Some(e) = instance {
+        let local = |t: i64| fmt_utc(t).trim_end_matches('Z').to_string();
+        lines.push(if e.all_day {
+            format!("RECURRENCE-ID;VALUE=DATE:{}", fmt_date(e.start))
+        } else if e.floating && !e.tzid.is_empty() {
+            format!("RECURRENCE-ID;TZID={}:{}", clean(&e.tzid), local(e.start))
+        } else if e.floating {
+            format!("RECURRENCE-ID:{}", local(e.start))
+        } else {
+            format!("RECURRENCE-ID:{}", fmt_utc(e.start))
+        });
+    }
+    lines.push("END:VEVENT".into());
+    lines.push("END:VCALENDAR".into());
+    lines.iter().map(|l| fold(l)).collect::<Vec<_>>().join("\r\n") + "\r\n"
 }
 
 /// The TZID parameter of a property ("TZID=Europe/Berlin", maybe quoted), as IANA.
@@ -433,5 +478,25 @@ mod tests {
         // Read back: the same zone and wall-clock time.
         let back = parse_events(&written);
         assert_eq!((back[0].tzid.as_str(), back[0].start), ("America/New_York", ev[0].start));
+    }
+
+    #[test]
+    fn replies_for_a_series_or_one_date() {
+        let whole = build_reply("u-1", 3, "Sync; weekly", "ana@x.org", "me@y.org", "Me \"Q\"", "ACCEPTED", None, 0);
+        assert!(whole.contains("METHOD:REPLY\r\n") && whole.contains("UID:u-1\r\n") && whole.contains("SEQUENCE:3\r\n"));
+        assert!(whole.contains("ATTENDEE;PARTSTAT=ACCEPTED;CN=\"Me 'Q'\":mailto:me@y.org"));
+        assert!(whole.contains("SUMMARY:Sync\\; weekly") && !whole.contains("RECURRENCE-ID"));
+        let zoned = Event { start: parse_datetime("20261117T100000").unwrap().0, floating: true, tzid: "Europe/Lisbon".into(), recurring: true, ..Default::default() };
+        let one = build_reply("u-1", 3, "Sync", "ana@x.org", "me@y.org", "Me", "DECLINED", Some(&zoned), 0);
+        assert!(one.contains("RECURRENCE-ID;TZID=Europe/Lisbon:20261117T100000\r\n"), "{one}");
+        let utc = Event { start: parse_datetime("20261117T100000Z").unwrap().0, ..Default::default() };
+        assert!(build_reply("u", 0, "", "a@x", "b@y", "", "TENTATIVE", Some(&utc), 0).contains("RECURRENCE-ID:20261117T100000Z"));
+        let day = Event { start: parse_datetime("20261117").unwrap().0, all_day: true, ..Default::default() };
+        assert!(build_reply("u", 0, "", "a@x", "b@y", "", "TENTATIVE", Some(&day), 0).contains("RECURRENCE-ID;VALUE=DATE:20261117"));
+        // Line breaks smuggled into names can't add properties.
+        assert!(!build_reply("u\r\nX:1", 0, "s\r\nATTENDEE:evil", "a@x", "b@y", "", "ACCEPTED", None, 0).contains("\r\nX:1"));
+        // The organizer is read from invitations.
+        let e = &parse_events("BEGIN:VEVENT\r\nUID:a\r\nDTSTART:20261117T100000Z\r\nORGANIZER;CN=Ana:MAILTO:Ana@X.org\r\nEND:VEVENT\r\n")[0];
+        assert_eq!(e.organizer, "ana@x.org");
     }
 }

@@ -605,7 +605,7 @@ function inviteCard(e) {
       <strong>${e.title || "(no title)"}</strong>
       <div class="muted small">${eventWhen(e)}${e.recurring ? " · repeats" : ""}${e.location ? ` · ${e.location}` : ""}</div>
     </div></div>
-    <div class="invite-foot">${rsvpButtons(e)}<span class="muted small">In your Invitations calendar. Your answer is only noted here; nobody is told.</span></div>
+    <div class="invite-foot">${rsvpButtons(e, true)}<span class="muted small">In your Invitations calendar. Your answer stays here unless you press Send answer.</span></div>
   </div>`;
 }
 document.addEventListener("rsvp-changed", ({ detail }) => {

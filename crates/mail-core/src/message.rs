@@ -246,6 +246,8 @@ pub struct Outgoing<'a> {
     pub text: &'a str,
     pub in_reply_to: Option<&'a str>,
     pub references: &'a [String],
+    /// An iCalendar REPLY sent along (answering an invitation).
+    pub calendar: Option<&'a str>,
 }
 
 // ---- writing (RFC 5322 / 2045 / 2047) ------------------------------------------
@@ -392,12 +394,28 @@ pub fn build_message(m: &Outgoing<'_>) -> Result<(String, Vec<u8>)> {
         h.push(format!("References: {}", m.references.iter().map(|r| format!("<{r}>")).collect::<Vec<_>>().join("\r\n ")));
     }
     h.push("MIME-Version: 1.0".into());
-    h.push("Content-Type: text/plain; charset=utf-8".into());
-    h.push("Content-Transfer-Encoding: quoted-printable".into());
-    let mut out = h.join("\r\n");
-    out.push_str("\r\n\r\n");
-    out.push_str(&quoted_printable(m.text));
-    out.push_str("\r\n");
+    let mut out;
+    match m.calendar {
+        None => {
+            h.push("Content-Type: text/plain; charset=utf-8".into());
+            h.push("Content-Transfer-Encoding: quoted-printable".into());
+            out = h.join("\r\n");
+            out.push_str("\r\n\r\n");
+            out.push_str(&quoted_printable(m.text));
+            out.push_str("\r\n");
+        }
+        Some(ics) => {
+            // Calendars read the text/calendar alternative; people the text.
+            let boundary = format!("=_carteiro_{}", crate::b64::encode_with(&mid, crate::b64::URL_SAFE, false).chars().take(24).collect::<String>());
+            h.push(format!("Content-Type: multipart/alternative; boundary=\"{boundary}\""));
+            out = h.join("\r\n");
+            out.push_str(&format!(
+                "\r\n\r\n--{boundary}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n{}\r\n--{boundary}\r\nContent-Type: text/calendar; method=REPLY; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n{}\r\n--{boundary}--\r\n",
+                quoted_printable(m.text),
+                quoted_printable(ics)
+            ));
+        }
+    }
     Ok((mid, out.into_bytes()))
 }
 
@@ -465,6 +483,7 @@ mod tests {
             text: body,
             in_reply_to: None,
             references: &[],
+            calendar: None,
         })
         .unwrap();
         assert!(bytes.is_ascii(), "message must be 7-bit on the wire");
@@ -480,7 +499,7 @@ mod tests {
     #[test]
     fn rejects_header_injection() {
         let from = Addr { name: "x".into(), email: "x@y.org".into() };
-        let r = build_message(&Outgoing { from: &from, to: &[], cc: &[], subject: "hi\r\nBcc: victim@z.org", text: "", in_reply_to: None, references: &[] });
+        let r = build_message(&Outgoing { from: &from, to: &[], cc: &[], subject: "hi\r\nBcc: victim@z.org", text: "", in_reply_to: None, references: &[], calendar: None });
         assert!(r.is_err());
     }
 
@@ -502,6 +521,7 @@ mod tests {
             text: "Sure",
             in_reply_to: Some("p@x"),
             references: &refs,
+            calendar: None,
         })
         .unwrap();
         let m = parse_meta(&bytes);
@@ -537,7 +557,7 @@ mod injection_tests {
         let meta = parse_meta(raw);
         let from = Addr { name: String::new(), email: "me@x.org".into() };
         let to = [Addr { name: String::new(), email: "a@x.org".into() }];
-        let out = Outgoing { from: &from, to: &to, cc: &[], subject: &meta.subject, text: "hi", in_reply_to: None, references: &[] };
+        let out = Outgoing { from: &from, to: &to, cc: &[], subject: &meta.subject, text: "hi", in_reply_to: None, references: &[], calendar: None };
         match build_message(&out) {
             Err(_) => {}
             Ok((_, msg)) => {
@@ -545,5 +565,22 @@ mod injection_tests {
                 assert!(!headers.lines().any(|l| l.starts_with("bcc:")), "injected header: {headers}");
             }
         }
+    }
+
+    #[test]
+    fn writes_invitation_replies_and_names_inline_invitations() {
+        let from = Addr { name: "Me".into(), email: "me@y.org".into() };
+        let to = [Addr { name: String::new(), email: "ana@x.org".into() }];
+        let ics = "BEGIN:VCALENDAR\r\nMETHOD:REPLY\r\nBEGIN:VEVENT\r\nUID:u\r\nDTSTART:20261117T100000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let (_, bytes) = build_message(&Outgoing { from: &from, to: &to, cc: &[], subject: "Accepted: Sync", text: "Me has accepted.", in_reply_to: None, references: &[], calendar: Some(ics) }).unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("multipart/alternative") && text.contains("text/calendar; method=REPLY"));
+        let parts = crate::invites::calendar_parts(&bytes);
+        assert_eq!(parts.len(), 1, "a calendar finds the reply");
+        assert_eq!(crate::ical::calendar_method(&parts[0]), "REPLY");
+        assert_eq!(parse_body(&bytes).text.as_deref().map(str::trim), Some("Me has accepted."));
+        // An invitation sent inline is listed under a useful name.
+        let inline = b"From: a@x.org\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nhi\r\n--b\r\nContent-Type: text/calendar; method=REQUEST\r\n\r\nBEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n--b--\r\n";
+        assert!(parse_body(inline).attachments.iter().any(|a| a.name == "invitation.ics"));
     }
 }

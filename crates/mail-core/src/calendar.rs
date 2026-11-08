@@ -244,7 +244,8 @@ pub async fn save_event(
     event.uid = existing.as_ref().map(|e| e.event.uid.clone()).filter(|u| !u.is_empty()).unwrap_or_else(new_uid);
 
     let (remote_id, etag) = match (source.kind.as_str(), cred) {
-        ("local", _) | (_, None) => (String::new(), None),
+        // On this device: an event keeps its link to its series (invitations).
+        ("local", _) | (_, None) => (existing.as_ref().map(|e| e.remote_id.clone()).unwrap_or_default(), None),
         ("microsoft", Some(c)) => {
             let token = bearer(c)?;
             match &existing {
@@ -343,5 +344,24 @@ mod tests {
         assert_eq!((saved.event.start, saved.event.end), (2_000_000, 2_000_000)); // end clamped
         delete_event(&store, &source, None, id).await.unwrap();
         assert!(store.lock().unwrap().event(id).unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn editing_one_date_keeps_it_in_its_series() {
+        let mut st = Store::open_in_memory().unwrap();
+        let t = |d: &str| crate::ical::parse_datetime(d).unwrap().0;
+        let ev = |start: i64| crate::ical::Event { title: "Sync".into(), start, end: start + 3600, recurring: true, ..Default::default() };
+        st.save_invite("s-1", "ana@x.org", 0, &[ev(t("20261109T100000Z")), ev(t("20261116T100000Z"))], false, "ana@x.org", None).unwrap();
+        let cal = st.invitations_calendar().unwrap();
+        let first = st.events_between(0, i64::MAX / 2).unwrap().into_iter().find(|e| e.calendar_id == cal).unwrap();
+        let src = st.cal_sources().unwrap().into_iter().find(|s| s.kind == "local").unwrap();
+        let store = Mutex::new(st);
+        let mut edited = first.event.clone();
+        edited.title = "Sync (room changed)".into();
+        save_event(&store, &src, None, cal, Some(first.id), edited).await.unwrap();
+        let st = store.lock().unwrap();
+        let after = st.event(first.id).unwrap().unwrap();
+        assert_eq!((after.remote_id.as_str(), after.event.title.as_str()), ("s-1", "Sync (room changed)"));
+        assert_eq!(st.remove_series_range(first.id, None, None).unwrap(), 2, "still removed with its series");
     }
 }

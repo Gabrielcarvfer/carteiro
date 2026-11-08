@@ -60,6 +60,8 @@ CARTEIRO_TEST_CA=$PWD/.testmail/ca.pem \
   cargo test -p mail-core --test live_greenmail -- --ignored --test-threads=1
 CARTEIRO_CARDDAV_URL=http://127.0.0.1:5232/ \
   cargo test -p mail-core --test live_carddav -- --ignored  # a Radicale with alice/alice-pw
+cargo test -p carteiro --lib                           # app shell: backups, mail-check schedule
+node scripts/ui-test.mjs /path/to/chrome                 # interface, desktop and phone sizes (Node 22+)
 cargo test -p carteiro -- --ignored engine_detects_eicar # real ClamAV (after fetch-clamav.sh)
 ```
 

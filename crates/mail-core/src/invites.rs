@@ -37,9 +37,10 @@ pub fn import(store: &mut Store, msg: i64, sender: &str, raw: &[u8], now: i64) -
     if store.invites_checked(msg)? {
         return Ok(Vec::new());
     }
+    let account = store.message(msg)?.map(|m| m.account_id);
     let mut touched = Vec::new();
     for ics in calendar_parts(raw) {
-        for uid in apply(store, sender, &ics, now, false)? {
+        for uid in apply(store, sender, &ics, now, false, account)? {
             // The same invitation often comes twice (inline and as invite.ics).
             if !touched.contains(&uid) {
                 touched.push(uid);
@@ -53,8 +54,8 @@ pub fn import(store: &mut Store, msg: i64, sender: &str, raw: &[u8], now: i64) -
 /// A calendar file you chose to add from a message: like a mailed
 /// invitation, except that dates you removed from the series come back.
 /// Returns how many series it added or changed.
-pub fn import_ics(store: &mut Store, sender: &str, ics: &str, now: i64) -> Result<usize> {
-    let changed = apply(store, sender, ics, now, true)?;
+pub fn import_ics(store: &mut Store, sender: &str, ics: &str, now: i64, account: Option<i64>) -> Result<usize> {
+    let changed = apply(store, sender, ics, now, true, account)?;
     if changed.is_empty() {
         return Err(crate::Error::Other("Nothing was added: this event belongs to an invitation from someone else".into()));
     }
@@ -62,7 +63,7 @@ pub fn import_ics(store: &mut Store, sender: &str, ics: &str, now: i64) -> Resul
 }
 
 /// Applies one calendar object; returns the series it changed.
-fn apply(store: &mut Store, sender: &str, ics: &str, now: i64, by_hand: bool) -> Result<Vec<String>> {
+fn apply(store: &mut Store, sender: &str, ics: &str, now: i64, by_hand: bool, account: Option<i64>) -> Result<Vec<String>> {
     let method = calendar_method(ics);
     let mut touched = Vec::new();
     // Replies and counter-proposals are other people's answers, not events.
@@ -83,8 +84,9 @@ fn apply(store: &mut Store, sender: &str, ics: &str, now: i64, by_hand: bool) ->
             }
         } else {
             let sequence = events.iter().map(|e| e.sequence).max().unwrap_or(0);
+            let organizer = events.iter().map(|e| e.organizer.clone()).find(|o| !o.is_empty()).unwrap_or_default();
             let instances = crate::recur::expand_all(events, now - PAST, now + FUTURE, MAX_INSTANCES);
-            store.save_invite(&uid, sender, sequence, &instances, by_hand)?
+            store.save_invite(&uid, sender, sequence, &instances, by_hand, &organizer, account)?
         };
         if changed {
             touched.push(uid);
@@ -134,6 +136,7 @@ mod tests {
         }
         assert_eq!(import(&mut s, 1, "ana@example.org", &mail(&ics("REQUEST", SERIES), true), now).unwrap(), ["weekly-1"]);
         assert_eq!(titles(&s).len(), 4, "the whole series");
+        assert_eq!(s.invite_reply_info("weekly-1").unwrap(), Some(("ana@example.org".into(), 0, Some(a.id))), "who to answer, from which account");
         assert!(import(&mut s, 1, "ana@example.org", &mail(&ics("REQUEST", SERIES), true), now).unwrap().is_empty(), "once per message");
         // Your answer is per date, and survives an update.
         let first = s.invites_of(1, now).unwrap().remove(0);
@@ -166,9 +169,9 @@ mod tests {
         s.remove_series_range(evs[0].id, None, None).unwrap();
         assert!(titles(&s).is_empty(), "the whole series");
         // Adding the file by hand brings it back, removed dates included.
-        assert_eq!(import_ics(&mut s, "ana@example.org", &ics("REQUEST", &up4), now).unwrap(), 1);
+        assert_eq!(import_ics(&mut s, "ana@example.org", &ics("REQUEST", &up4), now, None).unwrap(), 1);
         assert_eq!(titles(&s).len(), 4);
-        assert!(import_ics(&mut s, "mallory@evil.example", &ics("REQUEST", &up4), now).is_err(), "not someone else's series");
+        assert!(import_ics(&mut s, "mallory@evil.example", &ics("REQUEST", &up4), now, None).is_err(), "not someone else's series");
         // Other people's replies are not events.
         let reply = SERIES.replace("weekly-1", "weekly-2");
         import(&mut s, 7, "bob@example.org", &mail(&ics("REPLY", &reply), false), now).unwrap();
