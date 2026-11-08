@@ -365,6 +365,27 @@ fn row_to_msg(r: &Row) -> rusqlite::Result<StoredMessage> {
     })
 }
 
+/// " pdf docx " for a message's attachments (file name extensions; for
+/// unnamed parts, from the content type), for `has:pdf` searches.
+fn attachment_types(raw: &[u8]) -> String {
+    let mut types: Vec<String> = parse_body(raw)
+        .attachments
+        .iter()
+        .filter_map(|a| {
+            let ext = a.name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).filter(|e| !e.is_empty() && e.len() <= 8 && e.bytes().all(|b| b.is_ascii_alphanumeric()));
+            ext.or_else(|| match a.mime.to_ascii_lowercase().as_str() {
+                "application/pdf" => Some("pdf".into()),
+                "text/calendar" => Some("ics".into()),
+                m if m.starts_with("image/") => m.strip_prefix("image/").map(|s| if s == "jpeg" { "jpg".into() } else { s.to_string() }),
+                _ => None,
+            })
+        })
+        .collect();
+    types.sort();
+    types.dedup();
+    if types.is_empty() { String::new() } else { format!(" {} ", types.join(" ")) }
+}
+
 /// Contacts you can change here: your own and the ones collected from mail.
 fn editable(kind: &str) -> bool {
     matches!(kind, "local" | "collected")
@@ -413,13 +434,31 @@ impl Store {
         if conn.prepare("SELECT removed FROM invite_series LIMIT 0").is_err() {
             conn.execute_batch("ALTER TABLE invite_series ADD COLUMN removed TEXT NOT NULL DEFAULT '[]'")?;
         }
+        let new_att_types = conn.prepare("SELECT att_types FROM messages LIMIT 0").is_err();
+        if new_att_types {
+            conn.execute_batch("ALTER TABLE messages ADD COLUMN att_types TEXT NOT NULL DEFAULT ''")?;
+        }
         if conn.prepare("SELECT organizer FROM invite_series LIMIT 0").is_err() {
             conn.execute_batch("ALTER TABLE invite_series ADD COLUMN organizer TEXT NOT NULL DEFAULT ''; ALTER TABLE invite_series ADD COLUMN account_id INTEGER;")?;
         }
         if conn.prepare("SELECT rsvp FROM events LIMIT 0").is_err() {
             conn.execute_batch("ALTER TABLE events ADD COLUMN rsvp TEXT NOT NULL DEFAULT ''")?;
         }
-        Ok(Self { conn })
+        let store = Self { conn };
+        if new_att_types {
+            // Messages already here: read their attachment types once.
+            let ids: Vec<i64> = store
+                .conn
+                .prepare("SELECT id FROM messages WHERE raw IS NOT NULL AND has_attachments = 1")?
+                .query_map([], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            for id in ids {
+                if let Some(raw) = store.raw(id)? {
+                    store.conn.execute("UPDATE messages SET att_types = ?1 WHERE id = ?2", params![attachment_types(&raw), id])?;
+                }
+            }
+        }
+        Ok(store)
     }
 
     // ---- accounts -------------------------------------------------------
@@ -722,6 +761,10 @@ impl Store {
         }
         if q.has_attachment {
             cond += " AND has_attachments = 1";
+        }
+        for exts in &q.attachment_types {
+            let alts: Vec<String> = exts.iter().map(|e| format!("att_types LIKE {} ESCAPE '\\'", arg(like(&format!(" {e} "))))).collect();
+            cond += &format!(" AND ({})", alts.join(" OR "));
         }
         if q.unread {
             cond += " AND seen = 0";
@@ -1180,6 +1223,7 @@ impl Store {
     }
 
     fn store_raw(&self, id: i64, raw: &[u8]) -> Result<()> {
+        self.conn.execute("UPDATE messages SET att_types = ?1 WHERE id = ?2", params![attachment_types(raw), id])?;
         let (stripped, parts) = crate::dedup::split_attachments(raw);
         self.conn.execute("DELETE FROM msg_blobs WHERE msg = ?1", [id])?;
         self.conn.execute("UPDATE messages SET raw = ?1 WHERE id = ?2", params![stripped, id])?;
@@ -2126,5 +2170,45 @@ mod tests {
         assert_eq!(s.thread_message_ids(a, &key, Some("INBOX")).unwrap(), [root, reply]);
         assert_eq!(s.thread_message_ids(a, &key, Some("Archive")).unwrap(), [copy]);
         assert_eq!(s.thread_message_ids(a, &key, None).unwrap(), [root, reply, copy, sent]);
+    }
+
+    #[test]
+    fn search_by_attachment_type() {
+        let (s, a) = store_with_account();
+        let mail = |mid: &str, files: &[(&str, &str)]| {
+            let mut m = format!("Message-ID: <{mid}@x>\r\nFrom: a@x.org\r\nSubject: {mid}\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nhi\r\n");
+            for (name, mime) in files {
+                let disp = if name.is_empty() { String::new() } else { format!("Content-Disposition: attachment; filename=\"{name}\"\r\n") };
+                m += &format!("--b\r\nContent-Type: {mime}\r\n{disp}Content-Transfer-Encoding: base64\r\n\r\nSGVsbG8=\r\n");
+            }
+            m += "--b--\r\n";
+            m.into_bytes()
+        };
+        for (uid, (mid, files)) in [
+            ("report", vec![("Q3 Report.PDF", "application/pdf")]),
+            ("deck", vec![("pitch.pptx", "application/octet-stream"), ("logo.png", "image/png")]),
+            ("letter", vec![("letter.docx", "application/octet-stream")]),
+            ("scan", vec![("", "image/jpeg")]),
+            ("plain", vec![]),
+        ].into_iter().enumerate() {
+            let raw = mail(mid, &files);
+            s.insert_message(&NewMessage { account_id: a, folder: "INBOX".into(), uid: Some(uid as u32 + 1), pop_uidl: None, meta: crate::message::parse_meta(&raw), seen: false, flagged: false, size: 1, raw: Some(raw) }).unwrap();
+        }
+        let found = |q: &str| {
+            let mut v: Vec<String> = s.list_threads(a, "INBOX", Some(q), 50, 0).unwrap().into_iter().map(|t| t.subject).collect();
+            v.sort();
+            v
+        };
+        assert_eq!(found("has:attachment:pdf"), ["report"]);
+        assert_eq!(found("has:pdf"), ["report"], "short form, upper-case extension");
+        assert_eq!(found("has:powerpoint"), ["deck"]);
+        assert_eq!(found("has:word"), ["letter"]);
+        assert_eq!(found("has:image"), ["deck", "scan"], "named and unnamed (by content type)");
+        assert_eq!(found("has:image has:pptx"), ["deck"], "both required");
+        assert_eq!(found("has:pdf report"), ["report"]);
+        assert!(found("has:zip").is_empty());
+        // Types stay known after the body is freed from the device.
+        s.clear_bodies_before(a, i64::MAX).unwrap();
+        assert_eq!(found("has:pdf"), ["report"]);
     }
 }
