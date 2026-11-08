@@ -135,13 +135,13 @@ mod tests {
         assert_eq!(import(&mut s, 1, "ana@example.org", &mail(&ics("REQUEST", SERIES), true), now).unwrap(), ["weekly-1"]);
         assert_eq!(titles(&s).len(), 4, "the whole series");
         assert!(import(&mut s, 1, "ana@example.org", &mail(&ics("REQUEST", SERIES), true), now).unwrap().is_empty(), "once per message");
-        // Your answer covers the series and survives an update.
+        // Your answer is per date, and survives an update.
         let first = s.invites_of(1, now).unwrap().remove(0);
         assert_eq!(first.event.title, "Team sync");
         s.set_rsvp(first.id, "maybe").unwrap();
         let update = SERIES.replace("SEQUENCE:0", "SEQUENCE:1").replace("COUNT=4", "COUNT=2");
         import(&mut s, 2, "ana@example.org", &mail(&ics("REQUEST", &update), false), now).unwrap();
-        assert_eq!(titles(&s), [("20261109".into(), "maybe".into()), ("20261116".into(), "maybe".into())]);
+        assert_eq!(titles(&s), [("20261109".into(), "maybe".into()), ("20261116".into(), "".into())]);
         // A stale update (older sequence) and a stranger's changes are ignored.
         import(&mut s, 3, "ana@example.org", &mail(&ics("REQUEST", SERIES), false), now).unwrap();
         import(&mut s, 4, "mallory@evil.example", &mail(&ics("CANCEL", &update), false), now).unwrap();

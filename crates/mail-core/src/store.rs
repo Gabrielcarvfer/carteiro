@@ -1,6 +1,6 @@
 //! Local SQLite cache: accounts, folders, messages, threads and rules.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use rusqlite::{params, Connection, OptionalExtension, Row};
@@ -1288,13 +1288,19 @@ impl Store {
         }
         let removed: Vec<(i64, i64)> = if by_hand { Vec::new() } else { existing.as_ref().and_then(|e| serde_json::from_str(&e.3).ok()).unwrap_or_default() };
         let rsvp = existing.map(|e| e.2).unwrap_or_default();
+        // Answers are per date: an update keeps the ones for dates still there.
+        let answers: HashMap<i64, String> = {
+            let mut st = self.conn.prepare_cached("SELECT start, rsvp FROM events WHERE calendar_id = ?1 AND remote_id = ?2 AND rsvp != ''")?;
+            let rows = st.query_map(params![cal, uid], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+            rows
+        };
         let tx = self.conn.transaction()?;
         tx.execute("DELETE FROM events WHERE calendar_id = ?1 AND remote_id = ?2", params![cal, uid])?;
         for e in instances.iter().filter(|e| !removed.iter().any(|&(a, b)| e.start >= a && e.start < b)) {
             tx.execute(
                 "INSERT INTO events (calendar_id, remote_id, uid, title, location, description, start, end, all_day, floating, recurring, tzid, rsvp)
                  VALUES (?1, ?2, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-                params![cal, uid, e.title, e.location, e.description, e.start, e.end, e.all_day, e.floating, e.recurring, e.tzid, rsvp],
+                params![cal, uid, e.title, e.location, e.description, e.start, e.end, e.all_day, e.floating, e.recurring, e.tzid, answers.get(&e.start).unwrap_or(&rsvp)],
             )?;
         }
         tx.execute(
@@ -1324,19 +1330,14 @@ impl Store {
         Ok(true)
     }
 
-    /// Your answer to an event ("yes", "maybe", "no", or "" to clear), for
-    /// the whole series when it's an invitation. Stays on this device.
+    /// Your answer to one event ("yes", "maybe", "no", or "" to clear); in a
+    /// series, just that date. Stays on this device.
     pub fn set_rsvp(&self, event_id: i64, rsvp: &str) -> Result<()> {
         if !matches!(rsvp, "" | "yes" | "maybe" | "no") {
             return Err(Error::Other("unknown answer".into()));
         }
         let Some(ev) = self.event(event_id)? else { return Ok(()) };
-        if ev.calendar_id == self.invitations_calendar()? && !ev.remote_id.is_empty() {
-            self.conn.execute("UPDATE events SET rsvp = ?1 WHERE calendar_id = ?2 AND remote_id = ?3", params![rsvp, ev.calendar_id, ev.remote_id])?;
-            self.conn.execute("UPDATE invite_series SET rsvp = ?1 WHERE uid = ?2", params![rsvp, ev.remote_id])?;
-        } else {
-            self.conn.execute("UPDATE events SET rsvp = ?1 WHERE id = ?2", params![rsvp, event_id])?;
-        }
+        self.conn.execute("UPDATE events SET rsvp = ?1 WHERE id = ?2", params![rsvp, ev.id])?;
         Ok(())
     }
 
