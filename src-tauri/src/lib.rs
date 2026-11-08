@@ -456,6 +456,7 @@ async fn sync_all(app: &AppHandle) {
     let _ = app.emit("mail-synced", arrived.len());
 }
 
+#[cfg(desktop)]
 fn show_main(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();

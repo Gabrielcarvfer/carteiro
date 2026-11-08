@@ -144,7 +144,17 @@ jobs:
           done
       - name: Finish the Android project (ClamAV, extracted native libraries, pinned Gradle)
         run: scripts/prepare-android.sh
-      - run: cargo tauri android build --apk --target aarch64 --target x86_64
+      # Gradle's downloads (Kotlin compiler, Android plugin, libraries), reused
+      # between runs; keyed by the generated build files.
+      - name: Cache Gradle downloads
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ hashFiles('src-tauri/gen/android/**/*.gradle.kts', 'src-tauri/gen/android/gradle/wrapper/gradle-wrapper.properties') }}
+      - name: "Build the APK (retried once: dependency downloads can stall)"
+        run: cargo tauri android build --apk --target aarch64 --target x86_64 || { sleep 30; cargo tauri android build --apk --target aarch64 --target x86_64; }
       - name: Sign APK
         env:
           KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}

@@ -48,4 +48,12 @@ grep -q "gradle-$GRADLE_VERSION-bin.zip" "$WRAPPER" || {
   echo "The generated project wants $(grep distributionUrl "$WRAPPER"); update GRADLE_VERSION/GRADLE_SHA256 in $0" >&2; exit 1; }
 sed -i '/^distributionSha256Sum=/d; /^networkTimeout=/d' "$WRAPPER"
 printf 'distributionSha256Sum=%s\nnetworkTimeout=120000\n' "$GRADLE_SHA256" >> "$WRAPPER"
+# Patient, retrying downloads: CI runners see stalled connections to Maven
+# Central / GitHub (the Kotlin compiler download timed out once).
+PROPS="$APP/gradle.properties"
+sed -i '/^systemProp.org.gradle.internal.http/d; /^systemProp.org.gradle.internal.repository.max.retries/d' "$PROPS"
+printf '%s\n' "systemProp.org.gradle.internal.http.connectionTimeout=120000" \
+  "systemProp.org.gradle.internal.http.socketTimeout=120000" \
+  "systemProp.org.gradle.internal.repository.max.retries=5" >> "$PROPS"
+
 echo "Android project ready (ClamAV for arm64-v8a and x86_64, Gradle $GRADLE_VERSION pinned)"
