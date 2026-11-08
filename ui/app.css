@@ -439,3 +439,5 @@ h3.sect { font-size: 15px; margin: 18px 0 4px; }
 @media (max-width: 720px), (max-height: 520px) and (pointer: coarse) {
   .contacts-mode:has(.contacts.has-sel) .body { padding-bottom: 0; }
 }
+.error-text { color: var(--danger); font-weight: 600; margin: 0; }
+.center { text-align: center; }

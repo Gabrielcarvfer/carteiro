@@ -64,6 +64,20 @@ export const api = {
   // so the files show up in Files / Downloads.
   exportMail: () => call("export_mail", { stampLocal: localStamp() }).then((r) => (indexOnAndroid(r?.[0]), r)),
   saveAttachment: (messageId, index) => call("save_attachment", { messageId, index }).then((p) => (indexOnAndroid(p), p)),
+  createBackup: (folder, passphrase, ui) => call("create_backup", { folder, passphrase, ui, stampLocal: localStamp() }).then((p) => (indexOnAndroid(p), p)),
+  /** Sends the chosen backup file to the app in pieces, then restores it. */
+  restoreBackup: async (file, passphrase, progress) => {
+    if (!tauri) return { accounts: 1, ui: {} };
+    const STEP = 3 << 20;
+    for (let at = 0; at === 0 || at < file.size; at += STEP) {
+      const piece = new Uint8Array(await file.slice(at, at + STEP).arrayBuffer());
+      let bin = "";
+      for (let i = 0; i < piece.length; i += 0x8000) bin += String.fromCharCode(...piece.subarray(i, i + 0x8000));
+      await call("restore_upload", { data: btoa(bin), first: at === 0 });
+      progress?.(Math.min(1, (at + STEP) / (file.size || 1)));
+    }
+    return call("restore_backup", { passphrase });
+  },
   exportSettings: (ui) => call("export_settings", { ui, stampLocal: localStamp() }).then((p) => (indexOnAndroid(p), p)),
   importSettings: (json) => call("import_settings", { json }),
   scannerUpdateNow: () => call("scanner_update_now"),

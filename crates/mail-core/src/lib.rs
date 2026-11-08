@@ -4,6 +4,7 @@
 
 pub mod account;
 pub mod b64;
+pub mod backup;
 pub mod caldav;
 pub mod carddav;
 pub mod calendar;

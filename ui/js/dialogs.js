@@ -338,7 +338,8 @@ function renderSetup() {
         <label class="stack"><span>Email address</span><input name="email" type="email" value="${s.email}" autocomplete="email" required /></label>
         ${s.error ? html`<div class="error">${s.error}</div>` : ""}
         <button class="btn primary" type="submit">Next</button>
-      </form>`, "", s.canCancel));
+      </form>
+      <p class="muted small center">Moving from another device or reinstalling? <button class="linkish" data-click="restore-open">Restore from a backup</button></p>`, "", s.canCancel));
     $("#modal [name=email]").focus();
     return;
   }
@@ -458,6 +459,11 @@ export async function openSettings() {
           <input type="file" name="import-file" accept=".json,application/json" hidden data-change="import-file" />
         </div>
         <p class="muted small">Exports contain accounts, rules, calendars and preferences, but never passwords or sign-in tokens.</p>
+        <div class="btn-row wrap">
+          <button class="btn" data-click="backup-open">Back up everything…</button>
+          <button class="btn" data-click="restore-open">Restore from a backup…</button>
+        </div>
+        <p class="muted small">A backup holds all your mail, contacts, calendars, settings and passwords, encrypted with a passphrase you choose. Restore it on any device or a new install to carry on where you left off.</p>
       </section>
       <section>
         <h3>Storage</h3>
@@ -796,6 +802,76 @@ const uiPrefs = () => {
   const get = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
   return { theme: get("carteiro.theme"), week_start: get(WEEK_START_KEY) };
 };
+
+const IS_ANDROID = !!window.CarteiroAndroid;
+
+// A full backup is encrypted with a passphrase; nobody can open it without it,
+// including us, so there is no way to recover a forgotten one.
+on("click", "backup-open", () => put("#modal", html`
+  <div class="modal-backdrop" data-click="modal-backdrop">
+    <div class="modal" role="dialog" aria-label="Back up everything">
+      <header>Back up everything<button class="icon-btn" aria-label="Close" data-click="modal-close">${icon("close")}</button></header>
+      <div class="content form">
+        <p class="muted small">Saves your mail, contacts, calendars, settings and passwords in one encrypted file. Keep it somewhere other than this device: a USB drive, another computer, or cloud storage.</p>
+        <label class="stack"><span>Passphrase (at least 8 characters)</span><input name="pass" type="password" autocomplete="new-password" /></label>
+        <label class="stack"><span>Repeat the passphrase</span><input name="pass2" type="password" autocomplete="new-password" /></label>
+        <p class="muted small">Without the passphrase the backup can't be opened, by anyone. Write it down.</p>
+        ${IS_ANDROID ? "" : html`<label class="stack"><span>Folder (empty: Downloads/Carteiro)</span><input name="folder" placeholder="for example /media/usb or D:\\Backups" autocapitalize="off" /></label>`}
+        ${IS_ANDROID ? html`<p class="muted small">It goes to Download/Carteiro, which stays even if the app is uninstalled. Copy it off the phone too.</p>` : ""}
+        <div class="error" hidden></div>
+      </div>
+      <footer><span class="spacer"></span><button class="btn" data-click="modal-close">Cancel</button><button class="btn primary" data-click="backup-go">Back up</button></footer>
+    </div>
+  </div>`));
+
+const modalError = (msg) => { const e = $("#modal .error"); e.textContent = String(msg); e.hidden = !msg; };
+
+on("click", "backup-go", (el) => {
+  const v = (n) => $(`#modal [name=${n}]`)?.value ?? "";
+  if (v("pass").length < 8) return modalError("Use a passphrase of at least 8 characters.");
+  if (v("pass") !== v("pass2")) return modalError("The two passphrases are different.");
+  modalError("");
+  return busy(el, "Backing up…", async () => {
+    try {
+      const path = await api.createBackup(v("folder").trim() || null, v("pass"), uiPrefs());
+      put("#modal", "");
+      toast(`Backup saved to ${path}`);
+    } catch (e) { modalError(e); }
+  });
+});
+
+on("click", "restore-open", () => put("#modal", html`
+  <div class="modal-backdrop" data-click="modal-backdrop">
+    <div class="modal" role="dialog" aria-label="Restore from a backup">
+      <header>Restore from a backup<button class="icon-btn" aria-label="Close" data-click="modal-close">${icon("close")}</button></header>
+      <div class="content form">
+        <p class="error-text">Everything currently in Carteiro on this device is replaced by the backup.</p>
+        <label class="stack"><span>Backup file (.carteiro)</span><input name="file" type="file" accept=".carteiro,application/octet-stream" /></label>
+        <label class="stack"><span>Passphrase</span><input name="pass" type="password" autocomplete="current-password" /></label>
+        <div class="error" hidden></div>
+      </div>
+      <footer><span class="spacer"></span><button class="btn" data-click="modal-close">Cancel</button><button class="btn danger" data-click="restore-go">Replace and restore</button></footer>
+    </div>
+  </div>`));
+
+on("click", "restore-go", (el) => {
+  const file = $("#modal [name=file]").files?.[0];
+  const pass = $("#modal [name=pass]").value;
+  if (!file) return modalError("Choose the backup file.");
+  if (!pass) return modalError("Enter the backup's passphrase.");
+  modalError("");
+  return busy(el, "Restoring…", async () => {
+    try {
+      const r = await api.restoreBackup(file, pass, (f) => { el.textContent = `Reading ${Math.round(f * 100)}%…`; });
+      try {
+        if (r.ui?.theme) localStorage.setItem("carteiro.theme", r.ui.theme);
+        if (r.ui?.week_start != null) localStorage.setItem(WEEK_START_KEY, r.ui.week_start);
+      } catch {}
+      toast(`Restored ${r.accounts} account${r.accounts === 1 ? "" : "s"}`);
+      setTimeout(() => location.reload(), 1200);
+    } catch (e) { modalError(e); }
+  });
+});
 
 on("click", "export-settings", (el) => busy(el, "Exporting…", async () => {
   toast(`Settings saved to ${await api.exportSettings(uiPrefs())}`);

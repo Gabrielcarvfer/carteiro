@@ -422,7 +422,7 @@ function renderList() {
       </div>
     </div>
     ${S.openThreads[t.ref] ? threadChildren(t.ref, t.folder) : ""}`) : !S.accounts.length
-      ? html`<div class="empty muted"><p>No email account yet.</p><button class="btn primary" data-click="add-account">Add an account</button></div>`
+      ? html`<div class="empty muted"><p>No email account yet.</p><button class="btn primary" data-click="add-account">Add an account</button><p><button class="linkish" data-click="restore-open">or restore from a backup</button></p></div>`
       : html`<div class="empty muted">Nothing here. Enjoy the quiet.</div>`);
 }
 

@@ -1393,6 +1393,19 @@ impl Store {
         Ok(())
     }
 
+    /// A consistent copy of the whole database (taken while it's in use).
+    pub fn snapshot_to(&self, path: &Path) -> Result<()> {
+        self.conn.execute("VACUUM INTO ?1", [path.to_string_lossy()])?;
+        Ok(())
+    }
+
+    /// Every stored secret (the database copy; see `src-tauri/src/secrets.rs`).
+    pub fn all_secrets(&self) -> Result<Vec<(String, String)>> {
+        let mut q = self.conn.prepare("SELECT key, value FROM secrets")?;
+        let rows = q.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
     // ---- secrets (only used where no OS keystore is available) ----------
 
     pub fn get_secret(&self, key: &str) -> Result<Option<String>> {

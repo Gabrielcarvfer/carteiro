@@ -1,5 +1,6 @@
 mod clamav;
 mod notify;
+mod backup;
 mod secrets;
 mod updater;
 
@@ -1069,6 +1070,59 @@ fn import_settings(state: State<'_, AppState>, json: String) -> Res<ImportResult
     Ok(ImportResult { report, ui: data.app.get("ui").cloned().unwrap_or_default() })
 }
 
+// ---- full backup (see backup.rs) ----------------------------------------------
+
+/// Writes the backup into `folder` (Downloads/Carteiro when empty).
+#[tauri::command]
+async fn create_backup(app: AppHandle, state: State<'_, AppState>, folder: Option<String>, passphrase: String, ui: serde_json::Value, stamp_local: Option<String>) -> Res<String> {
+    let dest_dir = match folder.as_deref().map(str::trim).filter(|f| !f.is_empty()) {
+        Some(f) => std::path::PathBuf::from(f),
+        None => export_dir(&app)?,
+    };
+    let data = app.path().app_data_dir().map_err(err)?;
+    let store = state.store.clone();
+    let stamp = stamp(stamp_local.as_deref());
+    let dest = tauri::async_runtime::spawn_blocking(move || backup::create(&data, &store, &dest_dir, &passphrase, &ui, &stamp)).await.map_err(err)??;
+    Ok(dest.display().to_string())
+}
+
+/// The UI sends the chosen backup file in base64 pieces (it may be large,
+/// the web view can't hand over a path, and Android's bridge carries text
+/// only). `first` starts a new upload.
+#[tauri::command]
+fn restore_upload(app: AppHandle, data: String, first: bool) -> Res<()> {
+    use std::io::Write;
+    let bytes = mail_core::b64::decode(&data).ok_or("damaged upload")?;
+    let path = app.path().app_data_dir().map_err(err)?.join(backup::UPLOAD);
+    let mut f = std::fs::OpenOptions::new().create(true).append(!first).write(true).truncate(first).open(&path).map_err(err)?;
+    restrict_to_owner(&path);
+    f.write_all(&bytes).map_err(err)
+}
+
+#[derive(Serialize)]
+struct Restored {
+    accounts: usize,
+    ui: serde_json::Value,
+}
+
+/// Replaces everything on this install with the uploaded backup.
+#[tauri::command]
+async fn restore_backup(app: AppHandle, state: State<'_, AppState>, passphrase: String) -> Res<Restored> {
+    let data = app.path().app_data_dir().map_err(err)?;
+    let store = state.store.clone();
+    let r = tauri::async_runtime::spawn_blocking(move || backup::restore(&data, &store, &passphrase)).await.map_err(err)??;
+    let s = state.inner();
+    let st = lock(s)?;
+    if let Some(cfg) = st.get_secret("app_settings").ok().flatten().and_then(|j| serde_json::from_str(&j).ok()) {
+        *s.settings.lock().map_err(|_| "lock poisoned")? = cfg;
+    }
+    if let Some(cfg) = st.get_secret("scanner_config").ok().flatten().and_then(|j| serde_json::from_str(&j).ok()) {
+        *s.scanner.lock().map_err(|_| "lock poisoned")? = cfg;
+    }
+    s.tokens.lock().map_err(|_| "lock poisoned")?.clear();
+    Ok(Restored { accounts: r.accounts, ui: r.ui })
+}
+
 #[tauri::command]
 fn storage_usage(state: State<'_, AppState>) -> Res<(u64, u64)> {
     lock(&state)?.attachment_usage().map_err(err)
@@ -1204,6 +1258,9 @@ pub fn run() {
             save_attachment,
             export_settings,
             import_settings,
+            create_backup,
+            restore_upload,
+            restore_backup,
             scanner_update_now,
             update_status,
             tracker_status,

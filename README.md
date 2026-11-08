@@ -68,12 +68,21 @@ The left rail (the bottom bar on phones) switches between **Mail**, **Calendar**
 - **Export:** saves every contact as one `.vcf` file in Downloads/Carteiro.
 - **Address books that stay in sync:** Google and Microsoft accounts bring their contacts automatically. The address-book button adds any CardDAV server (Fastmail, iCloud, Nextcloud, mailbox.org…). Synced contacts are read-only here: change them on the service and they update at the next sync. Accounts signed in before contacts existed need one fresh sign-in to grant access.
 
+### Backups and moving to another device
+
+Settings → *Your data* → **Back up everything…** saves one file, `Carteiro backup <date>.carteiro`, holding all your mail, contacts, calendars, rules, settings and passwords. It's encrypted with a passphrase you choose (PBKDF2-HMAC-SHA256 with 600,000 rounds, then AES-256-GCM), and without that passphrase nobody can open it, not even you, so write it down.
+
+- **Where it goes:** on desktop, any folder you type (a USB drive, a synced folder, another disk), or Downloads/Carteiro. On Android, Download/Carteiro, which stays even if the app is uninstalled; copy it off the phone too.
+- **Restoring:** on a new install, the welcome screen offers **Restore from a backup** (also under Settings → *Your data*). Pick the file, enter the passphrase, and everything is back, passwords included, so mail syncs right away. It replaces whatever that install had. A wrong passphrase or a damaged file changes nothing.
+- **Any device to any device:** a backup made on Android restores on Windows or Linux and the other way round.
+- This is also the way back if an app can't be updated in place, for example if an Android build was signed with a different key: back up, uninstall, install, restore.
+
 ### Settings
 
 - **Background:** how often to check for mail; notifications for new mail; Carteiro keeps syncing from the tray when its window is closed.
 - **Malware scanning:** turn ClamAV on or off, update its signatures, or use your own `clamd`.
 - **Privacy:** refresh the tracker list now (it also updates daily).
-- **Your data:** how much mail to keep offline (from the last day to all of it); save all mail as `.mbox`; export or import your settings (passwords are never included).
+- **Your data:** how much mail to keep offline (from the last day to all of it); save all mail as `.mbox`; export or import your settings (passwords are never included); back up everything, or restore a backup (below).
 - **Updates:** turn off automatic installation, check now, or install now.
 - **About:** the version, and the licenses of the bundled software.
 - The sun/moon button switches between light and dark.
@@ -140,6 +149,8 @@ scripts/               ClamAV fetch/build, local test mail server, wire check
   - Messages with such links open as plain text.
 
 **Attachments** are saved only after passing every check: the message scanned clean, the file type isn't dangerous, and the attachment scans clean on its own. Names are sanitised, existing files are never overwritten, and saved files are readable only by you.
+
+**Backups** are sealed with the passphrase before they leave the app's private folder: the plain copy made while backing up is owner-only and deleted at once. Each 1 MiB chunk is authenticated along with its position and the file header, so a reordered, cut-short or altered backup is refused instead of restored.
 
 **Local files.** On Linux, the mail cache, calendars and exports are readable only by your user (folder `0700`, files `0600`).
 
