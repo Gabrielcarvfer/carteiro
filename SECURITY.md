@@ -41,6 +41,8 @@ How Carteiro protects your mail and what was done to check it. To report a vulne
   - Links whose text names a different site than they open, and links to raw IP addresses.
   - Messages with such links open as plain text.
 
+**Scanning once.** Results are remembered by the SHA-256 of what was scanned: the same message or attachment isn't scanned again while ClamAV's signatures are unchanged. After a signature update, clean content is checked once more (new signatures may catch what old ones missed); anything found infected stays blocked.
+
 **Attachments** are saved only after passing every check: the message scanned clean, the file type isn't dangerous, and the attachment scans clean on its own. Names are sanitised, existing files are never overwritten, and saved files are readable only by you.
 
 **Backups** are encrypted with a key derived from your passphrase (PBKDF2-HMAC-SHA256, 600,000 rounds) using AES-256-GCM, before they leave the app's private folder: the plain copy made while backing up is owner-only and deleted at once. Each 1 MiB chunk is authenticated along with its position and the file header, so a reordered, cut-short or altered backup is refused instead of restored.

@@ -4,7 +4,7 @@ import { api } from "./api.js";
 import { $, ask, html, on, put } from "./dom.js";
 import { bytes, folderLabel, icon } from "./format.js";
 import { WEEK_START_KEY, refreshCalendar, weekStart } from "./calendar.js";
-import { S, UNIFIED, accountById, loadAccounts, refreshFolders, refreshThreads, selectAccount, toast } from "./app.js";
+import { S, SWIPE_ACTIONS, UNIFIED, accountById, loadAccounts, refreshFolders, refreshThreads, selectAccount, swipeAction, toast } from "./app.js";
 
 const closeModal = () => put("#modal", "");
 const modal = (title, body, footer = "", closable = true) => html`
@@ -436,6 +436,12 @@ export async function openSettings(start = "general") {
           <label class="check">Outside working hours
             <select name="off-hours" data-change="app-autosave">${[[60, "every hour"], [180, "every 3 hours"], [0, "only when I ask"]].map(([m, l]) => html`<option value="${m}" ${app.off_hours_minutes === m ? "selected" : ""}>${l}</option>`)}</select></label>
           <p class="muted small">The sync button checks right away at any time.</p>
+          <h3>Swiping a conversation</h3>
+          <div class="row2 swipe-prefs">
+            ${["left", "right"].map((side) => html`<label class="stack"><span>Swipe ${side === "left" ? "left ←" : "right →"}</span>
+              <select data-change="swipe-pref" data-side="${side}">${SWIPE_ACTIONS.map(([k, l]) => html`<option value="${k}" ${swipeAction(side) === k ? "selected" : ""}>${l}</option>`)}</select></label>`)}
+          </div>
+          <p class="muted small">On touch screens. Press and hold a conversation to pick several, then tap more.</p>
           <h3>Notifications</h3>
           <label class="check"><input type="checkbox" name="notify" ${app.notify ? "checked" : ""} data-change="app-autosave" /> Notify me when new mail arrives</label>
           <label class="check hide-narrow"><input type="checkbox" name="close-to-tray" ${app.close_to_tray ? "checked" : ""} data-change="app-autosave" /> Closing the window keeps Carteiro running in the system tray</label>
@@ -625,6 +631,8 @@ on("click", "scanner-save", async (el) => {
     setTimeout(() => (el.textContent = "Save"), 2000);
   } catch (e) { toast(String(e)); }
 });
+
+on("change", "swipe-pref", (el) => { try { localStorage.setItem(`carteiro.swipe.${el.dataset.side}`, el.value); } catch {} });
 
 // Settings save as soon as they change.
 const minutesOf = (t) => { const [h, m] = (t || "0:0").split(":").map(Number); return h * 60 + m; };
@@ -839,7 +847,7 @@ on("click", "export-mail", (el) => busy(el, "Saving…", async () => {
 
 const uiPrefs = () => {
   const get = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
-  return { theme: get("carteiro.theme"), week_start: get(WEEK_START_KEY) };
+  return { theme: get("carteiro.theme"), week_start: get(WEEK_START_KEY), swipe_left: get("carteiro.swipe.left"), swipe_right: get("carteiro.swipe.right") };
 };
 
 const IS_ANDROID = !!window.CarteiroAndroid;
@@ -905,6 +913,7 @@ on("click", "restore-go", (el) => {
       try {
         if (r.ui?.theme) localStorage.setItem("carteiro.theme", r.ui.theme);
         if (r.ui?.week_start != null) localStorage.setItem(WEEK_START_KEY, r.ui.week_start);
+        for (const side of ["left", "right"]) if (r.ui?.[`swipe_${side}`]) localStorage.setItem(`carteiro.swipe.${side}`, r.ui[`swipe_${side}`]);
       } catch {}
       toast(`Restored ${r.accounts} account${r.accounts === 1 ? "" : "s"}`);
       setTimeout(() => location.reload(), 1200);
@@ -926,6 +935,7 @@ on("change", "import-file", async (el) => {
     try {
       if (ui?.theme) localStorage.setItem("carteiro.theme", ui.theme);
       if (ui?.week_start != null) localStorage.setItem(WEEK_START_KEY, ui.week_start);
+      for (const side of ["left", "right"]) if (ui?.[`swipe_${side}`]) localStorage.setItem(`carteiro.swipe.${side}`, ui[`swipe_${side}`]);
     } catch {}
     const lines = [
       r.accounts_added.length && `Added accounts: ${r.accounts_added.join(", ")}`,

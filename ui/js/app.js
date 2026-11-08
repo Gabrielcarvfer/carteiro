@@ -13,6 +13,8 @@ export const S = {
   messages: [], query: "", syncing: false, loading: false, drawer: false,
   expanded: {}, showQuoted: {}, plain: {}, light: {}, images: {}, menuFor: null,
   openThreads: {}, children: {}, focusMsg: null,
+  // Conversations picked for a group action (press and hold, or Ctrl-click).
+  picked: new Set(),
   // Account and folders of the conversation being read (differs from
   // S.account in the unified inbox).
   viewAcct: null, viewFolders: null,
@@ -56,6 +58,7 @@ const closers = {
   compose: () => put("#compose", ""),
   contact: () => document.dispatchEvent(new Event("contact-back")),
   jumper: () => document.dispatchEvent(new Event("jumper-back")),
+  picks: () => { S.picked.clear(); renderList(); },
 };
 export function syncLayer(name, open) {
   const i = layers.lastIndexOf(name);
@@ -327,14 +330,31 @@ async function openThread(ref, focusId = null) {
   const unread = S.messages.filter((m) => !m.seen).map((m) => m.id);
   if (unread.length) {
     S.threads = S.threads.map((t) => (t.ref === ref ? { ...t, unread: 0 } : t));
+    for (const m of S.messages) m.seen = true;
+    renderReader();
     renderList();
     await guard(api.setFlag(acct, unread, "seen", true));
     refreshFolders();
   }
 }
 
+// Shows an action on the list at once, before the server has it.
+function patchThreads(refs, kind) {
+  const set = new Set(refs);
+  if (kind === "delete" || kind === "move" || kind.startsWith("move-to:")) {
+    S.threads = S.threads.filter((t) => !set.has(t.ref));
+  } else {
+    const change = { read: { unread: 0 }, flag: { flagged: true }, unflag: { flagged: false } }[kind];
+    S.threads = S.threads.map((t) => !set.has(t.ref) ? t
+      : kind === "unread" ? { ...t, unread: Math.max(1, t.unread) }
+      : change ? { ...t, ...change } : t);
+  }
+  renderList();
+}
+
 async function act(kind, ids, dest, acct = S.viewAcct ?? S.account?.id) {
   if (acct == null || !ids.length) return;
+  if (S.selected && S.messages.some((m) => ids.includes(m.id))) patchThreads([S.selected], kind);
   const id = acct;
   // The open conversation shows the change at once, not after a refresh.
   const field = { flag: ["flagged", true], unflag: ["flagged", false], read: ["seen", true], unread: ["seen", false] }[kind];
@@ -358,6 +378,7 @@ async function act(kind, ids, dest, acct = S.viewAcct ?? S.account?.id) {
 
 // kind is "delete" | "read" | "flag" | "unflag" | "move-to:<folder>" (drag and drop).
 async function threadAct(ref, kind) {
+  patchThreads([ref], kind);
   const [acct, key] = splitRef(ref);
   const folder = S.threads.find((t) => t.ref === ref)?.folder ?? S.folder;
   const msgs = (await guard(api.openThread(acct, key))) ?? [];
@@ -404,13 +425,13 @@ function renderList() {
   put("#list-title", title);
   put("#mobile-title", title);
   put("#threads", S.threads.length ? S.threads.map((t) => html`
-    <div class="item ${t.ref === S.selected ? "sel" : ""} ${t.unread ? "unread" : ""}" role="option"
-      aria-selected="${t.ref === S.selected}" draggable="true"
+    <div class="item ${t.ref === S.selected ? "sel" : ""} ${t.unread ? "unread" : ""} ${S.picked.has(t.ref) ? "picked" : ""}" role="option"
+      aria-selected="${S.picked.size ? S.picked.has(t.ref) : t.ref === S.selected}" draggable="${!S.picked.size}"
       data-click="thread" data-dragstart="threaddrag" data-key="${t.ref}" data-latest="${t.latest_id}">
       ${t.count > 1
         ? html`<button class="chevron ${S.openThreads[t.ref] ? "open" : ""}" title="Show messages" aria-expanded="${!!S.openThreads[t.ref]}" data-click="thread-expand">${icon("chevron", 14)}</button>`
         : html`<span class="chevron-gap"></span>`}
-      ${avatar(t.participants[0] ?? "?")}
+      ${S.picked.size ? html`<span class="pick-mark" aria-hidden="true">${S.picked.has(t.ref) ? icon("check", 18) : ""}</span>` : avatar(t.participants[0] ?? "?")}
       <div class="main">
         <div class="row"><span class="who ellipsis">${t.participants.join(", ")}</span>
           ${t.count > 1 ? html`<span class="count">${t.count}</span>` : ""}</div>
@@ -423,13 +444,132 @@ function renderList() {
       </div>
       <div class="hover-actions">
         <button class="icon-btn" title="Delete" data-click="thread-act" data-kind="delete">${icon("trash", 15)}</button>
-        <button class="icon-btn" title="Mark as read" data-click="thread-act" data-kind="read">${icon("read", 15)}</button>
+        <button class="icon-btn" title="${t.unread ? "Mark as read" : "Mark unread"}" data-click="thread-act" data-kind="${t.unread ? "read" : "unread"}">${icon("read", 15)}</button>
         <button class="icon-btn ${t.flagged ? "on" : ""}" title="${t.flagged ? "Clear flag" : "Flag"}" data-click="thread-act" data-kind="${t.flagged ? "unflag" : "flag"}">${icon("flag", 15)}</button>
       </div>
     </div>
     ${S.openThreads[t.ref] ? threadChildren(t.ref, t.folder) : ""}`) : !S.accounts.length
       ? html`<div class="empty muted"><p>No email account yet.</p><button class="btn primary" data-click="add-account">Add an account</button><p><button class="linkish" data-click="restore-open">or restore from a backup</button></p></div>`
       : html`<div class="empty muted">Nothing here. Enjoy the quiet.</div>`);
+  renderPickBar();
+}
+
+// ---- picking several conversations -------------------------------------------------
+
+function renderPickBar() {
+  S.picked = new Set([...S.picked].filter((r) => S.threads.some((t) => t.ref === r)));
+  const bar = $("#pick-bar");
+  bar.hidden = !S.picked.size;
+  syncLayer("picks", S.picked.size > 0);
+  if (!S.picked.size) return put(bar, "");
+  const folders = (S.viewFolders ?? S.folders).filter((f) => f.special !== "outbox" && f.name !== S.folder);
+  put(bar, html`
+    <button class="icon-btn" title="Stop picking" aria-label="Stop picking" data-click="pick-clear">${icon("close", 18)}</button>
+    <span class="pick-count">${S.picked.size} selected</span>
+    <span class="spacer"></span>
+    <button class="icon-btn" title="Mark as read" data-click="pick-act" data-kind="read">${icon("read", 18)}</button>
+    <button class="icon-btn" title="Mark unread" data-click="pick-act" data-kind="unread">${icon("compose", 18)}</button>
+    <button class="icon-btn" title="Flag" data-click="pick-act" data-kind="flag">${icon("flag", 18)}</button>
+    <button class="icon-btn" title="Delete" data-click="pick-act" data-kind="delete">${icon("trash", 18)}</button>
+    ${S.folder === UNIFIED ? "" : html`<select class="move" title="Move to" aria-label="Move to" data-change="pick-move">
+      <option value="">Move…</option>${folders.map((f) => html`<option value="${f.name}">${folderLabel(f)}</option>`)}</select>`}`);
+}
+
+function togglePick(ref) {
+  if (S.picked.has(ref)) S.picked.delete(ref); else S.picked.add(ref);
+  renderList();
+}
+
+async function actOnPicked(kind) {
+  const refs = [...S.picked];
+  S.picked.clear();
+  patchThreads(refs, kind);
+  for (const r of refs) await threadAct(r, kind);
+}
+on("click", "pick-clear", () => { S.picked.clear(); renderList(); });
+on("click", "pick-act", (el) => actOnPicked(el.dataset.kind));
+on("change", "pick-move", (el) => el.value && actOnPicked(`move-to:${el.value}`));
+
+// Press and hold a conversation to start picking; a swipe sideways acts on it.
+const HOLD_MS = 500;
+let press = null, suppressClick = false;
+document.addEventListener("pointerdown", (e) => {
+  const item = e.target.closest?.("#threads .item");
+  if (!item || e.button > 0 || e.target.closest("button, select")) return;
+  press = { item, x: e.clientX, y: e.clientY, id: e.pointerId, touch: e.pointerType !== "mouse", axis: null, dx: 0,
+    timer: setTimeout(() => { press && !press.axis && (press.held = true, suppressClick = true, togglePick(item.dataset.key), navigator.vibrate?.(15)); }, HOLD_MS) };
+});
+document.addEventListener("pointermove", (e) => {
+  if (!press || e.pointerId !== press.id) return;
+  const dx = e.clientX - press.x, dy = e.clientY - press.y;
+  if (!press.axis && Math.hypot(dx, dy) > 8) {
+    clearTimeout(press.timer);
+    press.axis = press.touch && Math.abs(dx) > Math.abs(dy) * 1.5 && !S.picked.size ? "x" : "y";
+    if (press.axis === "x") startSwipe(press);
+  }
+  if (press.axis === "x") moveSwipe(press, dx);
+});
+const endPress = (e) => {
+  if (!press || e.pointerId !== press.id) return;
+  clearTimeout(press.timer);
+  if (press.axis === "x") { suppressClick = true; endSwipe(press); }
+  press = null;
+};
+document.addEventListener("pointerup", endPress);
+document.addEventListener("pointercancel", (e) => { if (press?.axis === "x") press.dx = 0; endPress(e); });
+// Holding a conversation picks it; no text selection or menu from the system.
+document.addEventListener("contextmenu", (e) => { if (e.target.closest?.("#threads .item")) e.preventDefault(); });
+// A hold or a swipe isn't also a tap.
+document.addEventListener("click", (e) => {
+  if (suppressClick && e.target.closest?.("#threads")) { e.stopPropagation(); e.preventDefault(); }
+  suppressClick = false;
+}, true);
+
+// ---- swiping a conversation --------------------------------------------------------
+
+export const SWIPE_ACTIONS = [["unread", "Mark unread"], ["read", "Mark read"], ["flag", "Flag / unflag"], ["archive", "Archive"], ["delete", "Delete"], ["none", "Nothing"]];
+const SWIPE_DEFAULTS = { left: "unread", right: "read" };
+export function swipeAction(side) {
+  try { return localStorage.getItem(`carteiro.swipe.${side}`) || SWIPE_DEFAULTS[side]; } catch { return SWIPE_DEFAULTS[side]; }
+}
+const SWIPE_LOOK = { unread: ["compose", "#0f6cbd"], read: ["read", "#0f6cbd"], flag: ["flag", "#ca5010"], archive: ["archive", "#107c10"], delete: ["trash", "#c50f1f"] };
+
+function startSwipe(p) {
+  p.bg = document.createElement("div");
+  p.bg.className = "swipe-bg";
+  p.item.parentElement.insertBefore(p.bg, p.item);
+  Object.assign(p.bg.style, { top: `${p.item.offsetTop}px`, height: `${p.item.offsetHeight}px` });
+  p.item.classList.add("swiping");
+}
+function moveSwipe(p, dx) {
+  const side = dx < 0 ? "left" : "right";
+  const kind = swipeAction(side);
+  p.dx = kind === "none" ? 0 : dx;
+  p.item.style.transform = `translateX(${p.dx}px)`;
+  const [ic, color] = SWIPE_LOOK[kind] ?? ["", "transparent"];
+  const armed = Math.abs(p.dx) > p.item.offsetWidth * 0.3;
+  p.bg.style.background = armed ? color : "var(--surface-2)";
+  p.bg.style.justifyContent = side === "left" ? "flex-end" : "flex-start";
+  p.bg.classList.toggle("armed", armed);
+  p.bg.innerHTML = kind === "none" ? "" : String(html`${icon(ic, 20)}<span>${SWIPE_ACTIONS.find(([k]) => k === kind)[1]}</span>`);
+}
+function endSwipe(p) {
+  const side = p.dx < 0 ? "left" : "right";
+  const armed = Math.abs(p.dx) > p.item.offsetWidth * 0.3;
+  p.item.classList.remove("swiping");
+  p.item.style.transform = "";
+  setTimeout(() => p.bg.remove(), 200);
+  if (!armed) return;
+  const t = S.threads.find((x) => x.ref === p.item.dataset.key);
+  let kind = swipeAction(side);
+  if (!t || kind === "none") return;
+  if (kind === "flag") kind = t.flagged ? "unflag" : "flag";
+  if (kind === "archive") {
+    const archive = (S.viewFolders ?? S.folders).find((f) => f.special === "archive")?.name;
+    if (!archive) return toast("This account has no Archive folder");
+    kind = `move-to:${archive}`;
+  }
+  threadAct(t.ref, kind);
 }
 
 // Outlook-style expanded conversation: one row per message, newest first.
@@ -629,7 +769,9 @@ function renderReader() {
         <div class="spacer"></div>
         <button class="icon-btn" title="Delete" data-click="conv" data-kind="delete">${icon("trash")}</button>
         <button class="icon-btn" title="Archive" data-click="conv" data-kind="archive">${icon("archive")}</button>
-        <button class="icon-btn" title="Mark unread" data-click="conv" data-kind="unread">${icon("read")}</button>
+        ${ms.some((m) => !m.seen)
+          ? html`<button class="icon-btn" title="Mark as read" data-click="conv" data-kind="read">${icon("read")}</button>`
+          : html`<button class="icon-btn" title="Mark unread" data-click="conv" data-kind="unread">${icon("read")}</button>`}
         ${ms.some((m) => m.flagged)
           ? html`<button class="icon-btn on" title="Clear flag" data-click="conv" data-kind="unflag">${icon("flag")}</button>`
           : html`<button class="icon-btn" title="Flag" data-click="conv" data-kind="flag">${icon("flag")}</button>`}
@@ -719,7 +861,10 @@ on("drop", "folderdrop", (el, e) => {
 });
 on("dragstart", "threaddrag", (el, e) => e.dataTransfer.setData("application/x-carteiro-thread", el.dataset.key));
 on("click", "thread", (el, e) => {
-  if (!e.target.closest("[data-kind], [data-click=thread-expand]")) openThread(el.dataset.key);
+  if (e.target.closest("[data-kind], [data-click=thread-expand]")) return;
+  // While picking, a tap adds or removes; Ctrl/Cmd-click picks on desktop.
+  if (S.picked.size || e.ctrlKey || e.metaKey) return togglePick(el.dataset.key);
+  openThread(el.dataset.key);
 });
 on("click", "thread-expand", async (el, e) => {
   e.stopPropagation();

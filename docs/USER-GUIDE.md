@@ -11,6 +11,8 @@ The left rail (the bottom bar on phones) switches between **Mail**, **Calendar**
 
 - **Read:** messages are grouped into conversations, newest first. Older messages in a long thread stay folded until you open them, and quoted text is folded too.
 - **Write:** the compose button (the pencil on phones). The To, Cc and Bcc fields suggest addresses from your contacts as you type. Reply, Reply all and Forward are on each message.
+- **Swipe** a conversation sideways on a touch screen: left marks it unread and right marks it read, unless you choose other actions (flag, archive, delete or nothing) in Settings → *general*.
+- **Several at once:** press and hold a conversation (Ctrl-click or ⌘-click on a computer), then tap others to add or remove them. The bar at the top marks them read or unread, flags, deletes or moves them together; ✕ or Back stops picking.
 - **Act on messages:** flag, mark read or unread, archive, delete, and *Move to* any folder. With no connection, sending goes to the Outbox, and every action is replayed when you're back online.
 - **Filter:** the filter button limits the list to *Unread*, *Flagged*, *To me* or *Has attachments*. Tap the chip above the list to show everything again.
 - **Search:** the search box understands words and these terms, which combine:

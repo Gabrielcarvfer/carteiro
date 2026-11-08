@@ -125,6 +125,9 @@ export async function mock(cmd, a) {
         .sort((x, y) => y.last_date - x.last_date);
     }
     case "open_thread": return structuredClone(threads[a.threadKey] ?? []);
+    case "delete_messages": case "move_messages":
+      for (const [k, t] of Object.entries(threads)) { const left = t.filter((m) => !a.ids.includes(m.id)); if (left.length) threads[k] = left; else delete threads[k]; }
+      return null;
     case "set_flag":
       for (const t of Object.values(threads)) for (const m of t) if (a.ids.includes(m.id)) m[a.flag] = a.on;
       return null;

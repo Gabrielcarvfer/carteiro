@@ -167,7 +167,7 @@ pub async fn index_clean_text(store: &Mutex<Store>, scanner: &ScannerConfig) -> 
             return Ok(done);
         }
         for (id, raw) in batch {
-            match scan::scan(scanner, &raw).await {
+            match scan::scan_cached(store, scanner, &raw).await {
                 Verdict::Clean => on_clean(store, id, &raw)?,
                 Verdict::Infected { .. } => lock(store)?.set_text(id, false, "")?,
                 Verdict::NotScanned { .. } => return Ok(done),
@@ -186,7 +186,7 @@ async fn build_views(store: &Mutex<Store>, msgs: Vec<StoredMessage>, scanner: &S
         let raw = lock(store)?.raw(m.id)?;
         let view = match raw {
             Some(raw) => {
-                let verdict = scan::scan(scanner, &raw).await;
+                let verdict = scan::scan_cached(store, scanner, &raw).await;
                 match &verdict {
                     Verdict::Clean => on_clean(store, m.id, &raw)?,
                     Verdict::Infected { .. } => lock(store)?.set_text(m.id, false, "")?,
@@ -596,7 +596,7 @@ async fn save_sent_copy_inner(store: &Mutex<Store>, account: &Account, password:
 /// attachment itself have passed every check (ClamAV, dangerous types).
 async fn checked_attachment(store: &Mutex<Store>, message_id: i64, index: usize, scanner: &ScannerConfig) -> Result<(String, Vec<u8>)> {
     let raw = lock(store)?.raw(message_id)?.ok_or_else(|| Error::Other("The message isn't downloaded yet".into()))?;
-    match scan::scan(scanner, &raw).await {
+    match scan::scan_cached(store, scanner, &raw).await {
         Verdict::Clean => {}
         Verdict::Infected { signature } => return Err(Error::Other(format!("Blocked: malware detected ({signature})"))),
         Verdict::NotScanned { reason } => return Err(Error::Other(format!("Can't save until the message has been scanned ({reason})"))),
@@ -605,7 +605,7 @@ async fn checked_attachment(store: &Mutex<Store>, message_id: i64, index: usize,
     if let Some(why) = crate::safety::attachment_risk(&name) {
         return Err(Error::Other(format!("Blocked: {why}")));
     }
-    if let Verdict::Infected { signature } = scan::scan(scanner, &bytes).await {
+    if let Verdict::Infected { signature } = scan::scan_cached(store, scanner, &bytes).await {
         return Err(Error::Other(format!("Blocked: malware detected ({signature})")));
     }
     Ok((name, bytes))

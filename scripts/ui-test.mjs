@@ -91,6 +91,61 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 860, false], ["phone", 39
   });
 
   await page(w, h, mobile);
+  const unreadOf = (text) => js(`[...document.querySelectorAll("#threads .item")].find((x) => x.textContent.includes(${JSON.stringify(text)}))?.classList.contains("unread")`);
+  const rect = (text) => js(`(() => { const r = [...document.querySelectorAll("#threads .item")].find((x) => x.textContent.includes(${JSON.stringify(text)})).getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2, r.width]; })()`);
+  const touch = (type, x, y) => send("Input.dispatchTouchEvent", { type, touchPoints: type === "touchEnd" ? [] : [{ x, y }] });
+  await test("read and unread show at once, in the list and the conversation", async () => {
+    expect(await unreadOf("Build failed"), "test message should start unread");
+    await js(`[...document.querySelectorAll("#threads .item")].find((x) => x.textContent.includes("Build failed")).querySelector("[data-kind=read]").click()`);
+    expect(!(await unreadOf("Build failed")), "list didn't update at once");
+    await clickText(".item", "Brand refresh"); await sleep(600);
+    await click("[data-click=conv][data-kind=unread]"); await sleep(50);
+    expect(await js(`!!document.querySelector("[data-click=conv][data-kind=read]")`), "conversation button didn't switch");
+    expect(await unreadOf("Brand refresh"), "list not marked unread at once");
+  });
+  if (mobile) {
+    await page(w, h, mobile);
+    await test("press and hold picks; taps add more; delete them together", async () => {
+      const before = await js(`document.querySelectorAll("#threads .item").length`);
+      const [x, y] = await rect("Cloud Storage");
+      await touch("touchStart", x, y); await sleep(700); await touch("touchEnd"); await sleep(200);
+      expect(await js(`document.querySelectorAll("#threads .item.picked").length`) === 1, "hold didn't pick");
+      expect(await js(`!document.querySelector("#pick-bar").hidden`), "no selection bar");
+      await clickText(".item", "Pedro Alves"); await sleep(100);
+      await clickText(".item", "Lisbon Air"); await sleep(100);
+      expect(await js(`document.querySelector(".pick-count").textContent`) === "3 selected", "taps didn't add");
+      await clickText(".item", "Lisbon Air"); await sleep(100);
+      expect(await js(`document.querySelector(".pick-count").textContent`) === "2 selected", "tap didn't remove");
+      await click("#pick-bar [data-kind=delete]"); await sleep(600);
+      expect(await js(`document.querySelectorAll("#threads .item").length`) === before - 2, "not deleted together");
+      expect(await js(`document.querySelector("#pick-bar").hidden`), "bar stayed");
+    });
+    await test("swipe left marks unread, swipe right marks read", async () => {
+      const [x, y, width] = await rect("Mum");
+      expect(!(await unreadOf("Mum")), "test message should start read");
+      await touch("touchStart", x, y);
+      for (let i = 1; i <= 8; i++) { await touch("touchMove", x - i * width * 0.06, y); await sleep(16); }
+      await touch("touchEnd"); await sleep(400);
+      expect(await unreadOf("Mum"), "swipe left didn't mark unread");
+      await touch("touchStart", x, y);
+      for (let i = 1; i <= 8; i++) { await touch("touchMove", x + i * width * 0.06, y); await sleep(16); }
+      await touch("touchEnd"); await sleep(400);
+      expect(!(await unreadOf("Mum")), "swipe right didn't mark read");
+      expect(await js(`!document.querySelector("#reader .pane h1")`), "a swipe opened the conversation");
+      expect(await js(`!document.querySelector(".swipe-bg")`), "swipe background left behind");
+    });
+  } else {
+    await test("Ctrl-click picks several; flag them together", async () => {
+      await page(w, h, mobile);
+      for (const t of ["Cloud Storage", "Lisbon Air"]) await js(`[...document.querySelectorAll("#threads .item")].find((x) => x.textContent.includes(${JSON.stringify(t)})).dispatchEvent(new MouseEvent("click", { bubbles: true, ctrlKey: true }))`);
+      await sleep(100);
+      expect(await js(`document.querySelector(".pick-count").textContent`) === "2 selected", "ctrl-click didn't pick");
+      await click("#pick-bar [data-kind=flag]"); await sleep(300);
+      expect(await js(`[...document.querySelectorAll("#threads .item")].filter((x) => /Cloud Storage|Lisbon Air/.test(x.textContent) && x.querySelector(".flagged")).length`) === 2, "not flagged together");
+    });
+  }
+
+  await page(w, h, mobile);
   await test("small month marks days with events", async () => {
     await click("[data-mode=calendar]"); await sleep(1000);
     expect(await js(`document.querySelectorAll(".mini-grid .busy").length`) > 0, "no marked days");

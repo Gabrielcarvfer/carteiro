@@ -94,6 +94,14 @@ CREATE TABLE IF NOT EXISTS invite_msgs (
     msg INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
     uids TEXT NOT NULL
 );
+-- ClamAV results by content (SHA-256), so the same bytes aren't scanned
+-- again: clean ones for that signature version, infected ones for good.
+CREATE TABLE IF NOT EXISTS scan_cache (
+    hash TEXT PRIMARY KEY,
+    infected TEXT,
+    db_version TEXT NOT NULL,
+    at INTEGER NOT NULL
+);
 -- Contacts deleted here that a sync or mail would otherwise bring back:
 -- the remote id for synced address books, the address for collected ones.
 CREATE TABLE IF NOT EXISTS contact_hidden (
@@ -1382,6 +1390,20 @@ impl Store {
                 Ok((r.get(0)?, r.get(1)?, r.get(2)?))
             })
             .optional()?)
+    }
+
+    /// A remembered scan: (signature if infected, signature version it was scanned with).
+    pub fn scan_result(&self, hash: &str) -> Result<Option<(Option<String>, String)>> {
+        Ok(self.conn.query_row("SELECT infected, db_version FROM scan_cache WHERE hash = ?1", [hash], |r| Ok((r.get(0)?, r.get(1)?))).optional()?)
+    }
+
+    pub fn put_scan_result(&self, hash: &str, infected: Option<&str>, db_version: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO scan_cache (hash, infected, db_version, at) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(hash) DO UPDATE SET infected = coalesce(scan_cache.infected, excluded.infected), db_version = excluded.db_version, at = excluded.at",
+            params![hash, infected, db_version, crate::calendar::now()],
+        )?;
+        Ok(())
     }
 
     /// Whether a series is in the Invitations calendar right now.
