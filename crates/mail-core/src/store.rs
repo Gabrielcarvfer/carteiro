@@ -311,6 +311,11 @@ impl Store {
     fn init(conn: Connection) -> Result<Self> {
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;")?;
         conn.execute_batch(SCHEMA)?;
+        // Columns added after the first release.
+        let has_tzid = conn.prepare("SELECT tzid FROM events LIMIT 0").is_ok();
+        if !has_tzid {
+            conn.execute_batch("ALTER TABLE events ADD COLUMN tzid TEXT NOT NULL DEFAULT ''")?;
+        }
         Ok(Self { conn })
     }
 
@@ -1031,9 +1036,9 @@ impl Store {
 
     pub fn insert_event(&self, calendar_id: i64, remote_id: &str, etag: Option<&str>, e: &crate::ical::Event) -> Result<i64> {
         self.conn.execute(
-            "INSERT INTO events (calendar_id, remote_id, etag, uid, title, location, description, start, end, all_day, floating, recurring)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-            params![calendar_id, remote_id, etag, e.uid, e.title, e.location, e.description, e.start, e.end, e.all_day, e.floating, e.recurring],
+            "INSERT INTO events (calendar_id, remote_id, etag, uid, title, location, description, start, end, all_day, floating, recurring, tzid)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            params![calendar_id, remote_id, etag, e.uid, e.title, e.location, e.description, e.start, e.end, e.all_day, e.floating, e.recurring, e.tzid],
         )?;
         Ok(self.conn.last_insert_rowid())
     }
@@ -1041,8 +1046,8 @@ impl Store {
     pub fn update_event(&self, id: i64, remote_id: &str, etag: Option<&str>, e: &crate::ical::Event) -> Result<()> {
         self.conn.execute(
             "UPDATE events SET remote_id = ?2, etag = ?3, uid = ?4, title = ?5, location = ?6, description = ?7, start = ?8, end = ?9,
-                all_day = ?10, floating = ?11, recurring = ?12 WHERE id = ?1",
-            params![id, remote_id, etag, e.uid, e.title, e.location, e.description, e.start, e.end, e.all_day, e.floating, e.recurring],
+                all_day = ?10, floating = ?11, recurring = ?12, tzid = ?13 WHERE id = ?1",
+            params![id, remote_id, etag, e.uid, e.title, e.location, e.description, e.start, e.end, e.all_day, e.floating, e.recurring, e.tzid],
         )?;
         Ok(())
     }
@@ -1067,13 +1072,15 @@ impl Store {
                 end: r.get(9)?,
                 all_day: r.get(10)?,
                 floating: r.get(11)?,
+                tzid: r.get(13)?,
+                tz_offset: None,
                 recurring: r.get(12)?,
             },
         })
     }
 
     const EVENT_COLS: &'static str =
-        "e.id, e.calendar_id, e.remote_id, e.etag, e.uid, e.title, e.location, e.description, e.start, e.end, e.all_day, e.floating, e.recurring";
+        "e.id, e.calendar_id, e.remote_id, e.etag, e.uid, e.title, e.location, e.description, e.start, e.end, e.all_day, e.floating, e.recurring, e.tzid";
 
     /// Events of visible calendars overlapping [from, to), by start time.
     pub fn events_between(&self, from: i64, to: i64) -> Result<Vec<StoredEvent>> {

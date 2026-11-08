@@ -47,6 +47,8 @@ const calendars = [
   { id: 2, source_id: 2, source_kind: "microsoft", source_name: "gabriel@work.example", remote_id: "x", name: "Work", color: "#c239b3", read_only: false, visible: true },
 ];
 let events = [
+  // 10:00-11:00 New York wall-clock time (today), as the engine stores zoned events.
+  { id: 90, calendar_id: 2, title: "Call with NY office", start: day0 + 10 * 3600, end: day0 + 11 * 3600, all_day: false, floating: true, tzid: "America/New_York", recurring: false, location: "", description: "" },
   { id: 1, calendar_id: 2, title: "Team standup", start: day0 + 9 * 3600, end: day0 + 9.25 * 3600, all_day: false, floating: false, recurring: true, location: "Teams", description: "" },
   { id: 2, calendar_id: 2, title: "Project review", start: day0 + 11 * 3600, end: day0 + 12.5 * 3600, all_day: false, floating: false, recurring: false, location: "Room 2", description: "Q3 numbers" },
   { id: 3, calendar_id: 1, title: "Dentist", start: day0 + 86400 + 16 * 3600, end: day0 + 86400 + 17 * 3600, all_day: false, floating: false, recurring: false, location: "", description: "" },

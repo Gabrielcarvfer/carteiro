@@ -18,6 +18,14 @@ pub struct Event {
     /// clock time rather than converting from UTC.
     pub floating: bool,
     pub recurring: bool,
+    /// The event's own time zone (IANA), if it has one. With `floating`, the
+    /// times are wall-clock times in this zone (the UI converts them);
+    /// otherwise they're exact and the zone is shown for reference.
+    pub tzid: String,
+    /// When saving an event with a zone: its UTC offset (seconds east) at the
+    /// start, for the VTIMEZONE written with it. Computed by the UI.
+    #[serde(skip_serializing)]
+    pub tz_offset: Option<i32>,
 }
 
 // ---- dates (proleptic Gregorian, no external crate) --------------------------
@@ -178,7 +186,8 @@ fn split_prop(line: &str) -> Option<(String, String, &str)> {
     })?.0;
     let head = &line[..idx];
     let (name, params) = head.split_once(';').unwrap_or((head, ""));
-    Some((name.to_ascii_uppercase(), params.to_ascii_uppercase(), &line[idx + 1..]))
+    // Parameter values keep their case (TZID=America/New_York).
+    Some((name.to_ascii_uppercase(), params.to_string(), &line[idx + 1..]))
 }
 
 /// Every VEVENT in a VCALENDAR object (including expanded instances).
@@ -226,8 +235,12 @@ pub fn parse_events(ics: &str) -> Vec<Event> {
                     "DTSTART" => {
                         if let Some((t, is_date, utc)) = parse_datetime(value) {
                             e.start = t;
-                            e.all_day = is_date || params.contains("VALUE=DATE") && !params.contains("VALUE=DATE-TIME");
+                            let up = params.to_ascii_uppercase();
+                            e.all_day = is_date || up.contains("VALUE=DATE") && !up.contains("VALUE=DATE-TIME");
                             e.floating = !utc;
+                            if !utc && !e.all_day {
+                                e.tzid = tzid_param(&params);
+                            }
                         }
                     }
                     "DTEND" => end = parse_datetime(value).map(|x| x.0),
@@ -239,6 +252,15 @@ pub fn parse_events(ics: &str) -> Vec<Event> {
         }
     }
     out
+}
+
+/// The TZID parameter of a property ("TZID=Europe/Berlin", maybe quoted), as IANA.
+fn tzid_param(params: &str) -> String {
+    params
+        .split(';')
+        .find_map(|p| p.split_once('=').filter(|(k, _)| k.eq_ignore_ascii_case("TZID")).map(|(_, v)| v))
+        .map(crate::tz::to_iana)
+        .unwrap_or_default()
 }
 
 // ---- writing -----------------------------------------------------------------
@@ -270,6 +292,27 @@ pub fn build_event(e: &Event, now: i64) -> String {
     if e.all_day {
         lines.push(format!("DTSTART;VALUE=DATE:{}", fmt_date(e.start)));
         lines.push(format!("DTEND;VALUE=DATE:{}", fmt_date(e.end.max(e.start + 86400))));
+    } else if let (true, false, Some(offset)) = (e.floating, e.tzid.is_empty(), e.tz_offset) {
+        // Wall-clock times in the event's zone. RFC 5545 needs a VTIMEZONE for
+        // the TZID; a fixed-offset one (the offset at the event) is exact for
+        // the event's times.
+        let wall = |t: i64| fmt_utc(t).trim_end_matches('Z').to_string();
+        lines.push(format!("DTSTART;TZID={}:{}", e.tzid, wall(e.start)));
+        lines.push(format!("DTEND;TZID={}:{}", e.tzid, wall(e.end.max(e.start))));
+        let sign = if offset < 0 { '-' } else { '+' };
+        let off = format!("{sign}{:02}{:02}", offset.unsigned_abs() / 3600, offset.unsigned_abs() % 3600 / 60);
+        let vtz = [
+            "BEGIN:VTIMEZONE".to_string(),
+            format!("TZID:{}", e.tzid),
+            "BEGIN:STANDARD".into(),
+            "DTSTART:19700101T000000".into(),
+            format!("TZOFFSETFROM:{off}"),
+            format!("TZOFFSETTO:{off}"),
+            "END:STANDARD".into(),
+            "END:VTIMEZONE".into(),
+        ];
+        let at = lines.iter().position(|l| l == "BEGIN:VEVENT").unwrap_or(lines.len());
+        lines.splice(at..at, vtz);
     } else {
         lines.push(format!("DTSTART:{}", fmt_utc(e.start)));
         lines.push(format!("DTEND:{}", fmt_utc(e.end.max(e.start))));
@@ -334,5 +377,22 @@ mod tests {
         };
         let back = &parse_events(&build_event(&e, 0))[0];
         assert_eq!(back, &e);
+    }
+
+    #[test]
+    fn time_zones_are_kept_and_written() {
+        let ics = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:ny\r\nSUMMARY:Call\r\nDTSTART;TZID=America/New_York:20261109T100000\r\nDTEND;TZID=America/New_York:20261109T110000\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:win\r\nSUMMARY:Outlook\r\nDTSTART;TZID=\"W. Europe Standard Time\":20261109T090000\r\nDTEND;TZID=\"W. Europe Standard Time\":20261109T093000\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let ev = parse_events(ics);
+        assert_eq!((ev[0].tzid.as_str(), ev[0].floating), ("America/New_York", true));
+        assert_eq!(ev[1].tzid, "Europe/Berlin", "Windows name mapped");
+        let mut out = ev[0].clone();
+        out.tz_offset = Some(-5 * 3600);
+        let written = build_event(&out, 0);
+        assert!(written.contains("DTSTART;TZID=America/New_York:20261109T100000\r\n"), "{written}");
+        assert!(written.contains("TZOFFSETTO:-0500"), "{written}");
+        assert!(written.find("BEGIN:VTIMEZONE") < written.find("BEGIN:VEVENT"));
+        // Read back: the same zone and wall-clock time.
+        let back = parse_events(&written);
+        assert_eq!((back[0].tzid.as_str(), back[0].start), ("America/New_York", ev[0].start));
     }
 }

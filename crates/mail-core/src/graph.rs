@@ -60,6 +60,9 @@ pub fn parse_event(v: &Value) -> Option<GraphEvent> {
             all_day: v.get("isAllDay").and_then(Value::as_bool).unwrap_or(false),
             floating: false,
             recurring: matches!(v.get("type").and_then(Value::as_str), Some("occurrence" | "exception" | "seriesMaster")),
+            // Times are exact (UTC); the event's own zone is kept to show it.
+            tzid: crate::tz::to_iana(&s(v, "originalStartTimeZone")),
+            tz_offset: None,
         },
     })
 }
@@ -67,7 +70,7 @@ pub fn parse_event(v: &Value) -> Option<GraphEvent> {
 /// Event instances (recurrences expanded) overlapping [from, to).
 pub async fn events(token: &str, calendar_id: &str, from: i64, to: i64) -> Result<Vec<GraphEvent>> {
     let mut url = format!(
-        "{BASE}/me/calendars/{}/calendarView?startDateTime={}Z&endDateTime={}Z&$top=200&$select=id,iCalUId,subject,location,bodyPreview,start,end,isAllDay,type",
+        "{BASE}/me/calendars/{}/calendarView?startDateTime={}Z&endDateTime={}Z&$top=200&$select=id,iCalUId,subject,location,bodyPreview,start,end,isAllDay,type,originalStartTimeZone",
         encode(calendar_id),
         ical::fmt_iso(from),
         ical::fmt_iso(to)
@@ -89,7 +92,10 @@ pub async fn events(token: &str, calendar_id: &str, from: i64, to: i64) -> Resul
 }
 
 fn body(e: &Event) -> Value {
-    let when = |t: i64| json!({ "dateTime": ical::fmt_iso(t), "timeZone": "UTC" });
+    // Wall-clock times in the event's zone (Graph accepts IANA names), so the
+    // event keeps its zone; otherwise exact UTC times.
+    let zoned = e.floating && !e.all_day && !e.tzid.is_empty();
+    let when = |t: i64| json!({ "dateTime": ical::fmt_iso(t), "timeZone": if zoned { e.tzid.as_str() } else { "UTC" } });
     let end = if e.all_day { e.end.max(e.start + 86400) } else { e.end.max(e.start) };
     json!({
         "subject": e.title,

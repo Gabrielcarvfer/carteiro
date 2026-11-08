@@ -29,6 +29,7 @@ pub mod store;
 pub mod sync;
 pub mod threading;
 pub mod tracking;
+pub mod tz;
 pub mod update;
 pub mod xml;
 

@@ -53,9 +53,50 @@ function weekdayNames(style) {
  * Event times as local Dates. Timed events are absolute instants; all-day and
  * "floating" ones are wall-clock values stored as UTC fields.
  */
+// ---- time zones (the web view's Intl has the zone database) ------------------------
+
+const LOCAL_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+const validTz = (tz) => {
+  try { new Intl.DateTimeFormat("en", { timeZone: tz }); return true; } catch { return false; }
+};
+/// The wall clock of instant `ms` in zone `tz`, as numbers.
+function zoneParts(tz, ms) {
+  const p = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone: tz, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" })
+    .formatToParts(new Date(ms)).map((x) => [x.type, +x.value]));
+  return p;
+}
+/// Seconds east of UTC in zone `tz` at instant `ms`.
+function tzOffset(tz, ms) {
+  const p = zoneParts(tz, ms);
+  return Math.round((Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second) - Math.floor(ms / 1000) * 1000) / 1000);
+}
+/// Wall-clock seconds (written as if UTC) in zone `tz` -> the exact moment.
+function fromZoned(wall, tz) {
+  let t = wall * 1000 - tzOffset(tz, wall * 1000) * 1000;
+  const second = tzOffset(tz, t); // the offset may differ around a DST change
+  t = wall * 1000 - second * 1000;
+  return new Date(t);
+}
+/// A moment as a local Date showing the wall clock in `tz` (for inputs).
+function inZone(d, tz) {
+  const p = zoneParts(tz, +d);
+  return new Date(p.year, p.month - 1, p.day, p.hour, p.minute);
+}
+const zoneName = (tz) => tz.split("/").pop().replace(/_/g, " ");
+const sameOffset = (tz, d) => tzOffset(tz, +d) === tzOffset(LOCAL_TZ, +d);
+
+/// "10:00–11:00 New York time" for events whose zone runs on another offset.
+function otherZone(e) {
+  if (e.all_day || !e.tzid || !validTz(e.tzid) || sameOffset(e.tzid, evDate(e, "start"))) return "";
+  const f = (d) => d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit", timeZone: e.tzid });
+  return `${f(evDate(e, "start"))}–${f(evDate(e, "end"))} ${zoneName(e.tzid)} time`;
+}
+
 function evDate(e, which) {
   const ts = e[which] * 1000;
   if (!e.all_day && !e.floating) return new Date(ts);
+  // Wall-clock time in the event's own zone: convert to the exact moment.
+  if (!e.all_day && e.tzid && validTz(e.tzid)) return fromZoned(e[which], e.tzid);
   const u = new Date(ts);
   return new Date(u.getUTCFullYear(), u.getUTCMonth(), u.getUTCDate(), u.getUTCHours(), u.getUTCMinutes());
 }
@@ -371,7 +412,7 @@ function agenda() {
       ${evs.length ? evs.map((e) => html`<button class="ag-ev" data-click="cal-open" data-id="${e.id}">
         <span class="bar" style="background:${color(e)}"></span>
         <span class="when muted small">${e.all_day ? "All day" : html`${fmtTime(evDate(e, "start"))}<br />${fmtTime(evDate(e, "end"))}`}</span>
-        <span class="what"><strong>${e.title || "(no title)"}</strong>${e.location ? html`<span class="muted small">${e.location}</span>` : ""}</span>
+        <span class="what"><strong>${e.title || "(no title)"}</strong>${e.location ? html`<span class="muted small">${e.location}</span>` : ""}${otherZone(e) ? html`<span class="muted small">${otherZone(e)}</span>` : ""}</span>
       </button>`) : html`<p class="muted small">Nothing scheduled</p>`}
     </section>`)}</div>`;
 }
@@ -391,9 +432,12 @@ function openEditor(ev) {
   const writable = C.calendars.filter((c) => !c.read_only);
   if (!writable.length) return toast("No writable calendar");
   C.editing = ev;
-  const s = evDate(ev, "start");
+  const tz = ev.tzid && validTz(ev.tzid) ? ev.tzid : LOCAL_TZ;
+  const shown = (d) => (ev.all_day || tz === LOCAL_TZ ? d : inZone(d, tz));
+  const s = shown(evDate(ev, "start"));
   // All-day end is exclusive; show the last day inclusively.
-  const e = ev.all_day ? addDays(evDate(ev, "end"), -1) : evDate(ev, "end");
+  const e = ev.all_day ? addDays(evDate(ev, "end"), -1) : shown(evDate(ev, "end"));
+  const zones = [...new Set([LOCAL_TZ, tz, "UTC", ...(Intl.supportedValuesOf?.("timeZone") ?? [])])];
   const cal = C.calendars.find((c) => c.id === ev.calendar_id);
   const locked = !!ev.id && ev.recurring && cal?.source_kind !== "local";
   put("#modal", html`
@@ -407,9 +451,12 @@ function openEditor(ev) {
             <select name="calendar">${writable.map((c) => html`<option value="${c.id}" ${c.id === ev.calendar_id ? "selected" : ""}>${c.name} — ${c.source_name}</option>`)}</select></label>
           <label class="check"><input type="checkbox" name="all_day" ${ev.all_day ? "checked" : ""} data-change="ev-allday" /> All day</label>
           <div class="ev-times">
-            <label class="stack"><span>Starts</span><span class="row2"><input type="date" name="sd" value="${dateVal(s)}" /><input type="time" name="st" value="${timeVal(s)}" ${ev.all_day ? "hidden" : ""} /></span></label>
-            <label class="stack"><span>Ends</span><span class="row2"><input type="date" name="ed" value="${dateVal(e)}" /><input type="time" name="et" value="${timeVal(e)}" ${ev.all_day ? "hidden" : ""} /></span></label>
+            <label class="stack"><span>Starts</span><span class="row2"><input type="date" name="sd" value="${dateVal(s)}" data-change="ev-when" /><input type="time" name="st" value="${timeVal(s)}" ${ev.all_day ? "hidden" : ""} data-change="ev-when" /></span></label>
+            <label class="stack"><span>Ends</span><span class="row2"><input type="date" name="ed" value="${dateVal(e)}" data-change="ev-when" /><input type="time" name="et" value="${timeVal(e)}" ${ev.all_day ? "hidden" : ""} data-change="ev-when" /></span></label>
           </div>
+          <label class="stack ev-tz" ${ev.all_day ? "hidden" : ""}><span>Time zone</span>
+            <select name="tz" data-change="ev-when">${zones.map((z) => html`<option value="${z}" ${z === tz ? "selected" : ""}>${z === LOCAL_TZ ? `${z} (yours)` : z}</option>`)}</select></label>
+          <p class="muted small tz-note" hidden></p>
           <label class="stack"><span>Location</span><input name="location" value="${ev.location ?? ""}" /></label>
           <label class="stack"><span>Notes</span><textarea name="description" rows="4">${ev.description ?? ""}</textarea></label>
           <div class="error" hidden></div>
@@ -423,7 +470,20 @@ function openEditor(ev) {
       </div>
     </div>`);
   $("#modal [name=title]").focus();
+  tzNote();
 }
+
+/// The times in your own zone, when the event's zone runs on another offset.
+function tzNote() {
+  const note = $("#modal .tz-note");
+  if (!note) return;
+  const { event } = readEditor();
+  const zoned = event.floating && event.tzid;
+  const s = evDate(event, "start");
+  note.hidden = !zoned || sameOffset(event.tzid, s);
+  if (!note.hidden) note.textContent = `Your time (${zoneName(LOCAL_TZ)}): ${s.toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })} – ${evDate(event, "end").toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+}
+on("change", "ev-when", () => tzNote());
 
 function readEditor() {
   const v = (n) => $(`#modal [name=${n}]`);
@@ -438,9 +498,18 @@ function readEditor() {
     end = Math.floor(+parseLocal(v("ed").value, v("et").value) / 1000);
     if (end < start) end = start + 1800;
   }
+  const tz = v("tz")?.value ?? LOCAL_TZ;
+  const base = { title: v("title").value.trim(), location: v("location").value.trim(), description: v("description").value, all_day: allDay, recurring: false, uid: "" };
+  if (allDay || tz === LOCAL_TZ || !validTz(tz)) {
+    return { calendar: +v("calendar").value, event: { ...base, start, end, floating: false, tzid: "" } };
+  }
+  // Another zone: the typed times are wall-clock times there.
+  const wall = (d, t) => { const [y, m, dd] = d.split("-").map(Number); const [h, mi] = t.split(":").map(Number); return Date.UTC(y, m - 1, dd, h, mi) / 1000; };
+  const ws = wall(v("sd").value, v("st").value);
+  const we = Math.max(wall(v("ed").value, v("et").value), ws);
   return {
     calendar: +v("calendar").value,
-    event: { title: v("title").value.trim(), location: v("location").value.trim(), description: v("description").value, start, end, all_day: allDay, floating: false, recurring: false, uid: "" },
+    event: { ...base, start: ws, end: we === ws ? ws + 1800 : we, floating: true, tzid: tz, tz_offset: tzOffset(tz, +fromZoned(ws, tz)) },
   };
 }
 
@@ -448,7 +517,7 @@ const closeEditor = () => { C.editing = null; put("#modal", ""); };
 
 on("click", "cal-close", closeEditor);
 on("click", "cal-backdrop", (el, e) => e.target === el && closeEditor());
-on("change", "ev-allday", (el) => { for (const t of document.querySelectorAll("#modal [type=time]")) t.hidden = el.checked; });
+on("change", "ev-allday", (el) => { for (const t of document.querySelectorAll("#modal [type=time], #modal .ev-tz")) t.hidden = el.checked; tzNote(); });
 on("click", "ev-save", async (el) => {
   const { calendar, event } = readEditor();
   el.disabled = true;
@@ -524,7 +593,7 @@ function searchResults() {
       ${evs.map((e) => html`<button class="ag-ev" data-click="cal-open" data-id="${e.id}">
         <span class="bar" style="background:${color(e)}"></span>
         <span class="when muted small">${e.all_day ? "All day" : html`${fmtTime(evDate(e, "start"))}<br />${fmtTime(evDate(e, "end"))}`}</span>
-        <span class="what"><strong>${e.title || "(no title)"}</strong>${e.location ? html`<span class="muted small">${e.location}</span>` : ""}</span>
+        <span class="what"><strong>${e.title || "(no title)"}</strong>${e.location ? html`<span class="muted small">${e.location}</span>` : ""}${otherZone(e) ? html`<span class="muted small">${otherZone(e)}</span>` : ""}</span>
       </button>`)}
     </section>`)}</div>`;
 }
