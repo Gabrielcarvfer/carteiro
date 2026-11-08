@@ -156,6 +156,13 @@ pub fn attachment_bytes(raw: &[u8], index: usize) -> Option<(String, Vec<u8>)> {
     Some((part_name(part), part.contents().to_vec()))
 }
 
+/// Every attachment's (name, contents), in `parse_body` order, from one
+/// parse of the message (asking for each by index parses it each time).
+pub fn all_attachments(raw: &[u8]) -> Vec<(String, Vec<u8>)> {
+    let Some(msg) = MessageParser::default().parse(raw) else { return Vec::new() };
+    msg.attachments().map(|p| (part_name(p), p.contents().to_vec())).collect()
+}
+
 fn synthetic_id(seed: &[u8]) -> String {
     let mut h = DefaultHasher::new();
     seed.hash(&mut h);

@@ -480,6 +480,12 @@ fn set_settings(state: State<'_, AppState>, config: AppSettings) -> Res<()> {
 
 /// Syncs every account, notifies about new Inbox mail and tells the UI to
 /// refresh. Skips if a background sync is already running.
+/// Tells the interface what's running in the background (`label`), or that
+/// it ended (None), so it can show it.
+fn activity(app: &AppHandle, key: &str, label: Option<String>) {
+    let _ = app.emit("activity", serde_json::json!({ "key": key, "label": label }));
+}
+
 async fn sync_all(app: &AppHandle) {
     let s = app.state::<AppState>();
     if s.syncing.swap(true, Ordering::SeqCst) {
@@ -489,19 +495,25 @@ async fn sync_all(app: &AppHandle) {
     let mut arrived = Vec::new();
     for a in &accounts {
         let Ok((_, pw)) = credential(&s, a.id).await else { continue };
+        activity(app, "sync", Some(format!("Checking mail ({})", a.email)));
         if let Ok(r) = sync::sync_account(&s.store, a, &pw).await {
             arrived.extend(r.arrived);
         }
     }
+    activity(app, "sync", Some("Updating calendars".into()));
     let _ = sync_calendars_inner(&s).await;
+    activity(app, "sync", Some("Updating contacts".into()));
     let _ = sync_contacts_inner(&s).await;
+    activity(app, "sync", None);
     // Keep the chosen period available offline, at most hourly.
     if calendar::now() - s.last_offline.load(Ordering::SeqCst) > 3600 {
         s.last_offline.store(calendar::now(), Ordering::SeqCst);
         let _ = offline_all(app, &s).await;
     }
     // Content search covers only mail the virus scanner found clean.
+    activity(app, "index", Some("Checking new mail with ClamAV and indexing it for search".into()));
     let _ = ops::index_clean_text(&s.store, &scanner(&s)).await;
+    activity(app, "index", None);
     calendar_changed(app);
     s.syncing.store(false, Ordering::SeqCst);
     if !arrived.is_empty() && settings(&s).notify {
@@ -1428,7 +1440,9 @@ pub fn run() {
                     if now && !ready {
                         let _ = handle.emit("scanner-ready", ());
                         let s = handle.state::<AppState>();
+                        activity(&handle, "index", Some("Checking mail with ClamAV and indexing it for search".into()));
                         let _ = ops::index_clean_text(&s.store, &crate::scanner(&s)).await;
+                        activity(&handle, "index", None);
                         calendar_changed(&handle);
                     }
                     ready = now;

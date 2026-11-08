@@ -170,14 +170,7 @@ pub fn own_hits(st: &Store, account_id: i64, thread_key: &str, hits: &[i64], que
         let Some(m) = st.message(id)? else { continue };
         let files = st
             .raw(id)?
-            .map(|raw| {
-                parse_body(&raw)
-                    .attachments
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(i, a)| crate::message::attachment_bytes(&raw, i).map(|(_, b)| (crate::update::sha256_hex(&b), a.name.clone())))
-                    .collect()
-            })
+            .map(|raw| crate::message::all_attachments(&raw).into_iter().map(|(name, b)| (crate::update::sha256_hex(&b), name)).collect())
             .unwrap_or_default();
         all.push((id, m.date, files));
     }
@@ -225,19 +218,19 @@ fn search_text(store: &Mutex<Store>, raw: &[u8]) -> String {
     let text = body.text.or_else(|| body.html.as_deref().map(crate::safety::strip_tags)).unwrap_or_default();
     // A generous cap keeps the index small (long threads repeat their history).
     let mut out: String = text.chars().take(64 * 1024).collect();
-    for (i, a) in body.attachments.iter().enumerate() {
+    let files = crate::message::all_attachments(raw);
+    for (a, (_, bytes)) in body.attachments.iter().zip(&files) {
         out.push('\n');
         out.push_str(&a.name);
         if a.danger.is_some() || a.size > crate::doctext::MAX_FILE {
             continue;
         }
-        let Some((_, bytes)) = crate::message::attachment_bytes(raw, i) else { continue };
-        let hash = crate::update::sha256_hex(&bytes);
+        let hash = crate::update::sha256_hex(bytes);
         let known = lock(store).ok().and_then(|st| st.attachment_text(&hash).ok().flatten());
         let inside = match known {
             Some(t) => t,
             None => {
-                let t = crate::doctext::extract(&a.name, &a.mime, &bytes).unwrap_or_default();
+                let t = crate::doctext::extract(&a.name, &a.mime, bytes).unwrap_or_default();
                 if let Ok(st) = lock(store) {
                     let _ = st.set_attachment_text(&hash, &t);
                 }

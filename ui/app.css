@@ -539,3 +539,15 @@ h3.sect { font-size: 15px; margin: 18px 0 4px; }
 .att.busy { opacity: 0.7; cursor: progress; }
 .att.busy .tag { border-style: dashed; }
 .att.saved .tag { color: var(--accent); }
+
+/* background activity, bottom left (above the offline download bar) */
+.activity { position: fixed; left: 16px; bottom: 16px; z-index: 31; max-width: min(420px, 100vw - 32px); display: flex; gap: 10px; align-items: flex-start; padding: 8px 12px; border-radius: 8px; background: var(--surface); border: 1px solid var(--border); box-shadow: 0 4px 20px rgb(0 0 0 / 0.2); font-size: 13px; color: var(--text-2); }
+.activity[hidden] { display: none; }
+.activity-list { display: flex; flex-direction: column; gap: 2px; }
+.progress:not([hidden]) ~ .activity, .activity:has(~ .progress:not([hidden])) { bottom: 110px; }
+.spinner { flex: none; width: 14px; height: 14px; margin-top: 2px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (max-width: 720px), (max-height: 520px) and (pointer: coarse) {
+  .activity { left: 8px; right: 8px; max-width: none; bottom: calc(64px + env(safe-area-inset-bottom)); }
+  .activity:has(~ .progress:not([hidden])) { bottom: calc(150px + env(safe-area-inset-bottom)); }
+}

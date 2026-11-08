@@ -22,6 +22,7 @@ The left rail (the bottom bar on phones) switches between **Mail**, **Calendar**
   Opening a conversation from a search opens the messages that matched, marked *Matches your search*, scrolls to the newest of them and highlights the attachments the search was about.
 - **Rules:** the Rules button (or *Create rule…* on a message) moves, flags or marks incoming mail by sender, recipient, subject or words, in the order you set. *Run rules on this folder now* applies them to mail already there.
 - **Images and safety:** remote images stay blocked until you choose *Load images*, and even then trackers stay blocked. A badge on each message says whether ClamAV has checked it; attachments can be saved only once they pass.
+- **What's running:** while Carteiro works in the background (checking mail, updating calendars and contacts, checking mail with ClamAV and indexing it, opening a large conversation, saving an attachment), a small box at the bottom says so.
 - **Saved files:** attachments and exports go to **Downloads/Carteiro**, named with your local date and time.
 
 ## Calendar

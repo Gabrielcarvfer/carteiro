@@ -321,7 +321,7 @@ async function openThread(ref, focusId = null) {
   renderList();
   renderReader();
   S.viewFolders = acct === S.account?.id ? S.folders : ((await guard(api.folders(acct))) ?? []);
-  S.messages = (await guard(api.openThread(acct, key))) ?? [];
+  S.messages = (await withTask("open", "Opening the conversation: checking it with ClamAV", () => guard(api.openThread(acct, key)))) ?? [];
   S.loading = false;
   S.expanded = {};
   S.menuFor = null;
@@ -332,7 +332,7 @@ async function openThread(ref, focusId = null) {
   const query = listQuery();
   if (query) {
     const folder = S.threads.find((t) => t.ref === ref)?.folder ?? S.folder;
-    const h = await guard(api.searchHits(acct, folder, key, query));
+    const h = await withTask("hits", "Finding the messages that match", () => guard(api.searchHits(acct, folder, key, query)));
     S.hits = new Set(S.messages.filter((m) => h?.message_ids.includes(m.message_id)).map((m) => m.id));
     S.hitExts = h?.extensions ?? [];
     if (!focusId && S.hits.size) focusId = [...S.messages].reverse().find((m) => S.hits.has(m.id))?.id ?? null;
@@ -1102,7 +1102,7 @@ on("click", "save-att", async (el) => {
   saving.add(key);
   setChip(key, "busy");
   try {
-    const path = await api.saveAttachment(id, index);
+    const path = await withTask(`save:${key}`, `Checking ${a?.name ?? "the attachment"} with ClamAV and saving it`, () => api.saveAttachment(id, index));
     saved.set(key, path);
     toast(`Saved to ${path}`);
   } catch (e) {
@@ -1237,6 +1237,34 @@ $("#threads").addEventListener("scroll", (e) => {
   const el = e.currentTarget;
   if (el.scrollTop + el.clientHeight > el.scrollHeight - 300) loadMore();
 }, { passive: true });
+
+// ---- what's running in the background ---------------------------------------------
+
+// Shown at the bottom while something takes a while: background work the app
+// reports (checking mail, calendars, indexing…), and slow steps here
+// (opening a conversation, saving an attachment) once they take over 300 ms.
+const tasks = new Map();
+const taskTimers = new Map();
+function renderTasks() {
+  const box = $("#activity");
+  box.hidden = tasks.size === 0;
+  put(box, html`<span class="spinner" aria-hidden="true"></span><div class="activity-list">${[...tasks.values()].map((l) => html`<div>${l}</div>`)}</div>`);
+}
+export function task(key, label) {
+  clearTimeout(taskTimers.get(key));
+  taskTimers.delete(key);
+  if (label) tasks.set(key, label); else tasks.delete(key);
+  renderTasks();
+}
+/** Runs `work`, showing `label` if it takes more than a moment. */
+export async function withTask(key, label, work) {
+  taskTimers.set(key, setTimeout(() => task(key, label), 300));
+  try { return await work(); } finally { task(key, null); }
+}
+listen("activity", ({ key, label }) => task(`bg:${key}`, label));
+// The virus scanner starting up (or updating) holds back formatted mail.
+listen("scanner-ready", () => task("bg:scanner", null));
+api.scannerStatus().then((st) => { if (st?.state && st.state !== "ready" && st.state !== "disabled") task("bg:scanner", "Starting the virus scanner (ClamAV)"); }).catch(() => {});
 
 // ---- offline download progress ---------------------------------------------------
 
