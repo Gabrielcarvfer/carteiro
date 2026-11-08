@@ -119,6 +119,7 @@ export async function mock(cmd, a) {
       { id: 1, kind: "local", account_id: null, url: "", username: "", name: "On this device" },
       { id: 2, kind: "microsoft", account_id: null, url: "", username: "gabriel@work.example", name: "gabriel@work.example" }];
     case "calendar_events": return events.filter((e) => e.end > a.from && e.start < a.to && calendars.find((c) => c.id === e.calendar_id).visible);
+    case "search_events": { const w = a.query.toLowerCase().split(/\s+/).filter(Boolean); return events.filter((e) => w.every((x) => (e.title + " " + (e.location ?? "") + " " + (e.description ?? "")).toLowerCase().includes(x))).sort((p, q) => p.start - q.start); }
     case "set_calendar_visible": calendars.find((c) => c.id === a.calendarId).visible = a.visible; return null;
     case "sync_calendars": return [];
     case "save_event": {

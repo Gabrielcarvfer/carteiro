@@ -1086,6 +1086,26 @@ impl Store {
         Ok(rows)
     }
 
+    /// Events in visible calendars whose title, location or description
+    /// contain every word of `query`, by date (at most `limit`).
+    pub fn search_events(&self, query: &str, limit: u32) -> Result<Vec<StoredEvent>> {
+        let words: Vec<String> = query.split_whitespace().take(8).map(like_pattern).collect();
+        if words.is_empty() {
+            return Ok(Vec::new());
+        }
+        let cond: String = (0..words.len())
+            .map(|i| format!(" AND (e.title LIKE ?{n} ESCAPE '\\' OR e.location LIKE ?{n} ESCAPE '\\' OR e.description LIKE ?{n} ESCAPE '\\')", n = i + 2))
+            .collect();
+        let mut st = self.conn.prepare(&format!(
+            "SELECT {} FROM events e JOIN calendars c ON c.id = e.calendar_id WHERE c.visible = 1{cond} ORDER BY e.start LIMIT ?1",
+            Self::EVENT_COLS
+        ))?;
+        let mut args: Vec<rusqlite::types::Value> = vec![i64::from(limit).into()];
+        args.extend(words.into_iter().map(Into::into));
+        let rows = st.query_map(rusqlite::params_from_iter(args.iter()), Self::row_to_event)?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     pub fn event(&self, id: i64) -> Result<Option<StoredEvent>> {
         Ok(self
             .conn
@@ -1311,6 +1331,24 @@ mod tests {
             .unwrap();
         assert_eq!(again, id);
         assert_eq!(s.message(id).unwrap().unwrap().uid, Some(77));
+    }
+
+    #[test]
+    fn searches_event_contents() {
+        let (s, _) = store_with_account();
+        let cal = s.ensure_local_calendar().unwrap();
+        let ev = |title: &str, location: &str, description: &str, start: i64| crate::ical::Event {
+            title: title.into(), location: location.into(), description: description.into(), start, end: start + 3600, ..Default::default()
+        };
+        s.insert_event(cal, "a", None, &ev("Dentist", "Rua Augusta 10", "", 300)).unwrap();
+        s.insert_event(cal, "b", None, &ev("Team sync", "Room 4", "Agenda: budget review and 100% roadmap", 100)).unwrap();
+        s.insert_event(cal, "c", None, &ev("Lunch", "Cantina", "budget-friendly", 200)).unwrap();
+        let titles = |q: &str| s.search_events(q, 50).unwrap().into_iter().map(|e| e.event.title).collect::<Vec<_>>();
+        assert_eq!(titles("budget"), ["Team sync", "Lunch"], "description, by date");
+        assert_eq!(titles("augusta"), ["Dentist"], "location, any case");
+        assert_eq!(titles("budget review"), ["Team sync"], "every word must match");
+        assert_eq!(titles("100%"), ["Team sync"], "LIKE wildcards are literal");
+        assert!(titles("   ").is_empty());
     }
 
     #[test]

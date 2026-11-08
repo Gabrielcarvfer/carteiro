@@ -71,6 +71,7 @@ export const api = {
   calendars: () => call("list_calendars"),
   calSources: () => call("list_cal_sources"),
   events: (from, to) => call("calendar_events", { from, to }),
+  searchEvents: (query) => call("search_events", { query }),
   setCalendarVisible: (calendarId, visible) => call("set_calendar_visible", { calendarId, visible }),
   syncCalendars: () => call("sync_calendars"),
   addCaldav: (url, username, password, name) => call("add_caldav_source", { url, username, password, name }),

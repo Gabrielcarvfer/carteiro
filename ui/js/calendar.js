@@ -4,7 +4,7 @@
 import { api } from "./api.js";
 import { $, html, on, put } from "./dom.js";
 import { icon } from "./format.js";
-import { toast } from "./app.js";
+import { closeDrawer, toast } from "./app.js";
 
 const C = {
   view: null, // "day" | "week" | "month" | "agenda"
@@ -15,6 +15,8 @@ const C = {
   syncing: false,
   slide: null, // "next" | "prev" after a swipe, for the slide-in animation
   keepWeek: null, // phone month view: week (timestamp) to keep at the top after reloading
+  query: "", // event search; non-empty shows results instead of the view
+  results: [],
   loads: 0, // only the latest load may draw (navigation can overtake a slower one)
 };
 
@@ -136,7 +138,8 @@ function render() {
   if (narrow() && C.view === "week") C.view = "day"; // 7 columns don't fit a phone
   const views = narrow() ? [["agenda", "Agenda"], ["day", "Day"], ["month", "Month"]] : [["day", "Day"], ["week", "Week"], ["month", "Month"], ["agenda", "Agenda"]];
   put("#calendar", html`
-    <div class="cal-side desktop-only">
+    <div class="scrim" data-click="scrim"></div>
+    <div class="cal-side">
       <button class="btn primary new" data-click="cal-new">${icon("plus", 16)} New event</button>
       ${miniMonth()}
       ${calendarList()}
@@ -149,10 +152,10 @@ function render() {
         <button class="icon-btn" aria-label="Next" data-click="cal-next">${icon("chevron")}</button>
         <h2 class="cal-title ellipsis">${title()}</h2>
         <div class="seg">${views.map(([v, l]) => html`<button class="${C.view === v ? "on" : ""}" data-click="cal-view" data-view="${v}">${l}</button>`)}</div>
-        <button class="icon-btn show-narrow-flex" title="Calendars" data-click="cal-manage">${icon("calendar")}</button>
         <button class="icon-btn ${C.syncing ? "spin" : ""}" title="Sync calendars" data-click="cal-sync">${icon("sync")}</button>
+        <input class="cal-search" type="search" placeholder="Search events" aria-label="Search events" data-input="cal-search" value="${C.query}" />
       </header>
-      <div class="cal-body ${C.slide ? `slide-${C.slide}` : ""}">${C.view === "month" ? (narrow() ? monthScroll() : month()) : C.view === "agenda" ? agenda() : timeGrid()}</div>
+      <div class="cal-body ${C.slide ? `slide-${C.slide}` : ""}">${C.query ? searchResults() : C.view === "month" ? (narrow() ? monthScroll() : month()) : C.view === "agenda" ? agenda() : timeGrid()}</div>
     </div>
     <button class="fab show-narrow-flex" aria-label="New event" data-click="cal-new">${icon("plus", 22)}</button>`);
   if (C.view === "day" || C.view === "week") {
@@ -501,12 +504,46 @@ on("click", "cal-next", () => step(1));
 on("click", "cal-today", () => { C.keepWeek = null; C.anchor = startOfDay(new Date()); load(); });
 on("click", "cal-view", (el) => { C.keepWeek = null; C.view = el.dataset.view; load(); });
 on("click", "cal-sync", () => sync());
-on("click", "cal-goto", (el) => { C.anchor = new Date(+el.dataset.ts); load(); });
+on("click", "cal-goto", (el) => { C.anchor = new Date(+el.dataset.ts); closeDrawer(); load(); });
 on("click", "cal-goto-day", (el, e) => { e.stopPropagation(); C.anchor = new Date(+el.dataset.ts); C.view = "day"; load(); });
 on("change", "cal-visible", async (el) => { await api.setCalendarVisible(+el.dataset.id, el.checked); load(); });
+// ---- search ------------------------------------------------------------------------
+
+function searchResults() {
+  if (!C.results.length) return html`<div class="agenda"><p class="muted empty">No events match "${C.query}".</p></div>`;
+  const days = [];
+  for (const e of C.results) {
+    const d = startOfDay(evDate(e, "start"));
+    const last = days[days.length - 1];
+    if (last && sameDay(last[0], d)) last[1].push(e);
+    else days.push([d, [e]]);
+  }
+  return html`<div class="agenda"><p class="muted small">${C.results.length} event${C.results.length === 1 ? "" : "s"} matching "${C.query}"</p>
+    ${days.map(([d, evs]) => html`<section>
+      <h3 class="${sameDay(d, new Date()) ? "today" : ""}">${d.toLocaleDateString([], { weekday: "long", day: "numeric", month: "long", year: "numeric" })}</h3>
+      ${evs.map((e) => html`<button class="ag-ev" data-click="cal-open" data-id="${e.id}">
+        <span class="bar" style="background:${color(e)}"></span>
+        <span class="when muted small">${e.all_day ? "All day" : html`${fmtTime(evDate(e, "start"))}<br />${fmtTime(evDate(e, "end"))}`}</span>
+        <span class="what"><strong>${e.title || "(no title)"}</strong>${e.location ? html`<span class="muted small">${e.location}</span>` : ""}</span>
+      </button>`)}
+    </section>`)}</div>`;
+}
+
+let searchTimer;
+on("input", "cal-search", (el) => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(async () => {
+    C.query = el.value.trim();
+    C.results = C.query ? ((await api.searchEvents(C.query).catch((e) => (toast(String(e)), []))) ?? []) : [];
+    // Only the results redraw, so the search box keeps focus while typing.
+    put("#calendar .cal-body", C.query ? searchResults() : C.view === "month" ? (narrow() ? monthScroll() : month()) : C.view === "agenda" ? agenda() : timeGrid());
+    if (!C.query && C.view === "month" && narrow()) initMonthScroll();
+  }, 200);
+});
+
 on("click", "cal-open", (el, e) => {
   e.stopPropagation();
-  const ev = C.events.find((x) => x.id === +el.dataset.id);
+  const ev = C.events.find((x) => x.id === +el.dataset.id) ?? C.results.find((x) => x.id === +el.dataset.id);
   if (ev) openEditor(ev);
 });
 function newEventAt(start) {
@@ -515,6 +552,7 @@ function newEventAt(start) {
   openEditor({ id: null, calendar_id: cal?.id, title: "", location: "", description: "", start: s, end: s + 3600, all_day: false, floating: false, recurring: false });
 }
 on("click", "cal-new", () => {
+  closeDrawer();
   const d = new Date();
   d.setMinutes(0, 0, 0);
   d.setHours(d.getHours() + 1);

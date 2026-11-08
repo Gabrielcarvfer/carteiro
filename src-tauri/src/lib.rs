@@ -688,6 +688,11 @@ fn calendar_events(state: State<'_, AppState>, from: i64, to: i64) -> Res<Vec<St
 }
 
 #[tauri::command]
+fn search_events(state: State<'_, AppState>, query: String) -> Res<Vec<StoredEvent>> {
+    lock(&state)?.search_events(&query, 200).map_err(err)
+}
+
+#[tauri::command]
 fn set_calendar_visible(state: State<'_, AppState>, calendar_id: i64, visible: bool) -> Res<()> {
     lock(&state)?.set_calendar_visible(calendar_id, visible).map_err(err)
 }
@@ -1062,6 +1067,7 @@ pub fn run() {
             list_calendars,
             list_cal_sources,
             calendar_events,
+            search_events,
             set_calendar_visible,
             sync_calendars,
             add_caldav_source,

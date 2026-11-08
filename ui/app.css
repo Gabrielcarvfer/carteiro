@@ -389,3 +389,14 @@ h3.sect { font-size: 15px; margin: 18px 0 4px; }
 .scan.bad { color: var(--danger); }
 .scan.wait, .scan.off { color: var(--text-2); }
 .att .tag.ok { color: var(--ok, #2e7d32); }
+/* Phones: the calendar side panel (new event, mini month, calendars) is a
+   drawer opened by the menu button, like the mail folders. */
+@media (max-width: 720px), (max-height: 520px) and (pointer: coarse) {
+  .calendar { position: relative; }
+  .calendar .cal-side { position: absolute; top: 0; bottom: 0; left: 0; width: min(300px, 85vw); z-index: 20; transform: translateX(-105%); transition: transform 0.18s ease-out; border-right: 0; padding-top: max(10px, env(safe-area-inset-top)); }
+  .drawer-open .calendar .cal-side { transform: none; box-shadow: 4px 0 24px rgb(0 0 0 / 0.25); }
+  .drawer-open .calendar .scrim { display: block; position: absolute; inset: 0; background: rgb(0 0 0 / 0.35); z-index: 15; }
+  .cal-search { order: 11; flex-basis: 100%; }
+}
+.calendar .scrim { display: none; }
+.cal-search { min-width: 160px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 16px; background: var(--surface-2); color: var(--text); }
