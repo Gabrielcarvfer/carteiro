@@ -490,3 +490,8 @@ h3.sect { font-size: 15px; margin: 18px 0 4px; }
 .ask .choices + .choices { margin-top: 8px; }
 .ics-list { list-style: none; margin: -6px 0 14px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .ics-list li { display: flex; flex-direction: column; }
+/* days with events in the small month: a dot under the number */
+.mini-grid button { position: relative; }
+.mini-grid button.busy::after { content: ""; position: absolute; left: 50%; bottom: 3px; width: 4px; height: 4px; margin-left: -2px; border-radius: 50%; background: var(--accent); }
+.mini-grid button.busy.today::after { background: var(--accent-text); }
+.mini-grid button.busy { font-weight: 600; }

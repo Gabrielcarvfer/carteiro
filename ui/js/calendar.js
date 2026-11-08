@@ -2,7 +2,7 @@
 // and the event editor.
 
 import { api } from "./api.js";
-import { $, ask, choose, html, on, put } from "./dom.js";
+import { $, ask, choose, html, on, put, raw } from "./dom.js";
 import { icon } from "./format.js";
 import { closeDrawer, toast } from "./app.js";
 
@@ -156,14 +156,26 @@ export async function showCalendar() {
 async function load() {
   const seq = ++C.loads;
   const [from, to] = range();
+  // The small month in the side panel marks its days with events too.
+  const [mFrom, mTo] = miniRange();
+  const lo = Math.min(+from, +mFrom), hi = Math.max(+to, +mTo);
   // Pad by a day: all-day events are stored at UTC midnight.
   const [cals, evs] = await Promise.all([
     api.calendars(),
-    api.events(Math.floor(from / 1000) - 86400, Math.floor(to / 1000) + 86400),
+    api.events(Math.floor(lo / 1000) - 86400, Math.floor(hi / 1000) + 86400),
   ]);
   if (seq !== C.loads) return;
   C.calendars = cals ?? [];
   C.events = (evs ?? []).filter((e) => evDate(e, "end") > from && evDate(e, "start") < to);
+  C.busy = new Set();
+  for (const e of evs ?? []) {
+    if (e.rsvp === "no") continue;
+    // An all-day end is exclusive; a timed event ending at midnight doesn't reach that day.
+    const last = new Date(+evDate(e, "end") - 1);
+    for (let d = startOfDay(evDate(e, "start")); d <= last && d < mTo; d = addDays(d, 1)) {
+      if (d >= mFrom) C.busy.add(d.toDateString());
+    }
+  }
   render();
 }
 
@@ -250,10 +262,15 @@ function calendarList() {
   </div>`;
 }
 
+function miniRange() {
+  const a = C.anchor;
+  const s = startOfWeek(new Date(a.getFullYear(), a.getMonth(), 1));
+  return [s, addDays(s, 42)];
+}
+
 function miniMonth() {
   const a = C.anchor;
-  const first = new Date(a.getFullYear(), a.getMonth(), 1);
-  const s = startOfWeek(first);
+  const [s] = miniRange();
   const today = new Date();
   return html`<div class="mini">
     <div class="mini-head">${a.toLocaleDateString([], { month: "long", year: "numeric" })}</div>
@@ -261,8 +278,9 @@ function miniMonth() {
       ${weekdayNames("narrow").map((d) => html`<span class="muted">${d}</span>`)}
       ${Array.from({ length: 42 }, (_, i) => {
         const d = addDays(s, i);
-        const cls = [d.getMonth() !== a.getMonth() ? "other" : "", sameDay(d, today) ? "today" : "", sameDay(d, a) ? "sel" : ""].join(" ");
-        return html`<button class="${cls}" data-click="cal-goto" data-ts="${+d}">${d.getDate()}</button>`;
+        const busy = C.busy?.has(d.toDateString());
+        const cls = [d.getMonth() !== a.getMonth() ? "other" : "", sameDay(d, today) ? "today" : "", sameDay(d, a) ? "sel" : "", busy ? "busy" : ""].join(" ");
+        return html`<button class="${cls}" data-click="cal-goto" data-ts="${+d}" ${busy ? raw('aria-description="has events"') : ""}>${d.getDate()}</button>`;
       })}
     </div></div>`;
 }
