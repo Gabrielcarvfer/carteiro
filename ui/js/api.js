@@ -24,6 +24,12 @@ export function withoutTracking(link) {
   }
 }
 
+/// "2026-11-08 1407" in local time, for exported file names.
+function localStamp() {
+  const d = new Date(), p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}${p(d.getMinutes())}`;
+}
+
 function indexOnAndroid(path) {
   try { if (path && window.CarteiroAndroid) window.CarteiroAndroid.indexFile(path); } catch {}
 }
@@ -56,9 +62,9 @@ export const api = {
   downloadOfflineNow: () => call("download_offline_now"),
   // Saved into Downloads/Carteiro; on Android, also added to the media index
   // so the files show up in Files / Downloads.
-  exportMail: () => call("export_mail").then((r) => (indexOnAndroid(r?.[0]), r)),
+  exportMail: () => call("export_mail", { stampLocal: localStamp() }).then((r) => (indexOnAndroid(r?.[0]), r)),
   saveAttachment: (messageId, index) => call("save_attachment", { messageId, index }).then((p) => (indexOnAndroid(p), p)),
-  exportSettings: (ui) => call("export_settings", { ui }).then((p) => (indexOnAndroid(p), p)),
+  exportSettings: (ui) => call("export_settings", { ui, stampLocal: localStamp() }).then((p) => (indexOnAndroid(p), p)),
   importSettings: (json) => call("import_settings", { json }),
   scannerUpdateNow: () => call("scanner_update_now"),
   setScanner: (config) => call("set_scanner", { config }),

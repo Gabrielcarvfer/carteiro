@@ -872,7 +872,12 @@ fn export_dir(app: &AppHandle) -> Res<std::path::PathBuf> {
     Ok(dir)
 }
 
-fn stamp() -> String {
+/// The local time the UI sent for file names ("2026-11-08 1407"); the engine
+/// has no time zone database. Anything unexpected falls back to UTC.
+fn stamp(local: Option<&str>) -> String {
+    if let Some(l) = local.filter(|l| l.len() <= 20 && l.bytes().all(|b| b.is_ascii_digit() || b == b'-' || b == b' ')) {
+        return l.to_string();
+    }
     let t = calendar::now();
     let (y, m, d) = mail_core::ical::civil_from_days(t.div_euclid(86400));
     let s = t.rem_euclid(86400);
@@ -890,9 +895,9 @@ async fn save_attachment(app: AppHandle, state: State<'_, AppState>, message_id:
 
 /// Saves all mail of every account as .mbox files. Returns the folder.
 #[tauri::command]
-async fn export_mail(app: AppHandle, state: State<'_, AppState>) -> Res<(String, Vec<ops::ExportReport>)> {
+async fn export_mail(app: AppHandle, state: State<'_, AppState>, stamp_local: Option<String>) -> Res<(String, Vec<ops::ExportReport>)> {
     let s = state.inner();
-    let dir = export_dir(&app)?.join(format!("Carteiro mail {}", stamp()));
+    let dir = export_dir(&app)?.join(format!("Carteiro mail {}", stamp(stamp_local.as_deref())));
     let mut reports = Vec::new();
     let accounts = lock(s)?.list_accounts().map_err(err)?;
     for a in accounts {
@@ -904,11 +909,11 @@ async fn export_mail(app: AppHandle, state: State<'_, AppState>) -> Res<(String,
 }
 
 #[tauri::command]
-fn export_settings(app: AppHandle, state: State<'_, AppState>, ui: serde_json::Value) -> Res<String> {
+fn export_settings(app: AppHandle, state: State<'_, AppState>, ui: serde_json::Value, stamp_local: Option<String>) -> Res<String> {
     let s = state.inner();
     let prefs = serde_json::json!({ "settings": settings(s), "scanner": s.scanner.lock().map(|c| c.clone()).unwrap_or_default(), "ui": ui });
     let data = mail_core::settings_io::export(&*lock(s)?, prefs, calendar::now()).map_err(err)?;
-    let path = export_dir(&app)?.join(format!("Carteiro settings {}.json", stamp()));
+    let path = export_dir(&app)?.join(format!("Carteiro settings {}.json", stamp(stamp_local.as_deref())));
     std::fs::write(&path, serde_json::to_vec_pretty(&data).map_err(err)?).map_err(err)?;
     restrict_to_owner(&path);
     Ok(path.display().to_string())
