@@ -411,7 +411,12 @@ h3.sect { font-size: 15px; margin: 18px 0 4px; }
 .ct-bar .spacer { flex: 1; }
 .ct-search { margin: 4px 12px 8px; padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-2); color: inherit; }
 .ct-items { flex: 1; overflow: auto; }
-.ct-letter { margin: 0; padding: 8px 14px 2px; font-size: 12px; color: var(--accent); }
+.ct-list { position: relative; }
+.ct-letter { display: block; margin: 8px 14px 2px; width: 30px; height: 30px; border: 0; border-radius: 4px; background: var(--accent); color: #fff; font-size: 16px; font-weight: 600; text-transform: lowercase; }
+.ct-jumper { position: absolute; inset: 0; z-index: 5; display: grid; grid-template-columns: repeat(4, 64px); grid-auto-rows: 64px; gap: 8px; justify-content: center; align-content: center; background: color-mix(in srgb, var(--surface) 92%, transparent); backdrop-filter: blur(4px); animation: ct-jumper-in 0.15s ease-out; }
+.ct-jumper button { border: 0; border-radius: 4px; font-size: 26px; font-weight: 600; text-transform: lowercase; background: var(--surface-2); color: var(--text-2); opacity: 0.45; }
+.ct-jumper button.on { background: var(--accent); color: #fff; opacity: 1; }
+@keyframes ct-jumper-in { from { opacity: 0; transform: scale(1.06); } }
 .ct-item { display: flex; gap: 10px; align-items: center; width: 100%; padding: 8px 14px; border: 0; background: transparent; text-align: left; color: inherit; }
 .ct-item:hover { background: var(--hover); }
 .ct-item.on { background: var(--selected); }

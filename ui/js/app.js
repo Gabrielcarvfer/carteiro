@@ -55,6 +55,7 @@ const closers = {
   modal: () => put("#modal", ""),
   compose: () => put("#compose", ""),
   contact: () => document.dispatchEvent(new Event("contact-back")),
+  jumper: () => document.dispatchEvent(new Event("jumper-back")),
 };
 export function syncLayer(name, open) {
   const i = layers.lastIndexOf(name);

@@ -8,11 +8,11 @@ import { avatar, icon } from "./format.js";
 import { syncLayer, toast } from "./app.js";
 import { openCompose } from "./dialogs.js";
 
-const K = { query: "", list: [], sources: [], selected: null };
+const K = { query: "", list: [], sources: [], selected: null, jumper: false };
 
 /** Leaving the section closes the open contact. */
 export function leaveContacts() {
-  if (K.selected) { K.selected = null; render(); }
+  if (K.selected || K.jumper) { K.selected = null; K.jumper = false; render(); }
 }
 
 export async function showContacts() {
@@ -36,7 +36,7 @@ const sourceName = (c) => K.sources.find((s) => s.id === c.source_id)?.name ?? "
 function render() {
   const groups = [];
   for (const c of K.list) {
-    const letter = (c.name[0] ?? "#").toLocaleUpperCase();
+    const letter = letterOf(c.name);
     const g = groups[groups.length - 1];
     if (g && g[0] === letter) g[1].push(c);
     else groups.push([letter, [c]]);
@@ -56,17 +56,44 @@ function render() {
       </header>
       <input class="ct-search" type="search" placeholder="Search contacts" aria-label="Search contacts" data-input="ct-search" value="${K.query}" />
       <div class="ct-items">
-        ${K.list.length ? groups.map(([l, cs]) => html`<h3 class="ct-letter">${l}</h3>${cs.map((c) => html`
+        ${K.list.length ? groups.map(([l, cs]) => html`<button class="ct-letter" data-click="ct-jumper" data-letter="${l}" aria-label="Jump to a letter">${l}</button>${cs.map((c) => html`
           <button class="ct-item ${c.id === K.selected ? "on" : ""}" data-click="ct-open" data-id="${c.id}">
             ${avatar(c.name, 34)}<span class="who"><strong>${c.name}</strong><span class="muted small">${c.emails[0] ?? c.phones[0] ?? ""}</span></span>
           </button>`)}`)
         : html`<p class="muted empty">${K.query ? `No contacts match "${K.query}".` : html`No contacts yet. <button class="linkish" data-click="ct-import">Import</button> a vCard, CSV or LDIF file from Gmail, Outlook or Thunderbird, or add an address book.`}</p>`}
       </div>
+      ${K.jumper ? jumper(new Set(groups.map(([l]) => l))) : ""}
     </div>
     <div class="ct-detail">${sel ? detail(sel) : html`<div class="placeholder muted">${icon("person", 48)}<p>Select a contact</p></div>`}</div>`);
   $("#contacts").classList.toggle("has-sel", !!sel);
   syncLayer("contact", !!sel);
+  syncLayer("jumper", K.jumper);
 }
+
+// Groups by the first letter without accents (Á under A); digits and symbols under #.
+const LETTERS = ["#", ..."ABCDEFGHIJKLMNOPQRSTUVWXYZ"];
+function letterOf(name) {
+  const l = (name.normalize("NFD")[0] ?? "").toLocaleUpperCase();
+  return LETTERS.includes(l) ? l : "#";
+}
+
+// Tapping a heading shows every letter; the ones with contacts jump there.
+function jumper(present) {
+  return html`<div class="ct-jumper" data-click="ct-jumper-close">
+    ${LETTERS.map((l) => present.has(l)
+      ? html`<button class="on" data-click="ct-jump" data-letter="${l}">${l}</button>`
+      : html`<button disabled>${l}</button>`)}
+  </div>`;
+}
+document.addEventListener("jumper-back", () => { K.jumper = false; render(); });
+on("click", "ct-jumper", () => { K.jumper = true; render(); });
+on("click", "ct-jumper-close", () => { K.jumper = false; render(); });
+on("click", "ct-jump", (el, e) => {
+  e.stopPropagation();
+  K.jumper = false;
+  render();
+  $(`#contacts .ct-letter[data-letter="${el.dataset.letter}"]`)?.scrollIntoView({ block: "start" });
+});
 document.addEventListener("contact-back", () => { K.selected = null; render(); });
 
 function detail(c) {
