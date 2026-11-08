@@ -130,3 +130,47 @@ jobs:
           path: Carteiro-ci-test.apk
           if-no-files-found: error
           retention-days: 7
+
+  linux-appimage:
+    name: Linux AppImage builds
+    # As in releases: AppImages run on systems at least as new as the builder.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: System libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libfuse2
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo install tauri-cli --version "=2.12.4" --locked
+      - run: cargo tauri icon app-icon.svg
+      - name: Bundle ClamAV (pinned, checksum-verified)
+        run: scripts/fetch-clamav.sh linux-x64
+      - name: AppImage tools (pinned, checksum-verified)
+        run: scripts/fetch-appimage-tools.sh
+      - run: cargo tauri build --bundles appimage
+      # An AppImage can build and still not start: check that every bundled
+      # program finds its libraries and that the bundled ClamAV runs.
+      - name: Check the AppImage
+        run: |
+          set -euo pipefail
+          APP=$(ls target/release/bundle/appimage/*.AppImage)
+          cd "$(mktemp -d)" && "$OLDPWD/$APP" --appimage-extract >/dev/null
+          C=$(find squashfs-root -type d -name clamav | head -1)
+          for bin in squashfs-root/usr/bin/carteiro "$C/clamd" "$C/freshclam"; do
+            if LD_LIBRARY_PATH= ldd "$bin" | grep 'not found'; then echo "::error::$bin is missing libraries"; exit 1; fi
+          done
+          # Without a config file clamd stops at reading it (and exits non-zero),
+          # which proves it started with its bundled libraries.
+          out=$(env -u LD_LIBRARY_PATH "$C/clamd" --version 2>&1 || true)
+          echo "$out"
+          grep -qE "ClamAV|clamd.conf" <<<"$out"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: carteiro-linux-appimage-ci-test
+          path: target/release/bundle/appimage/*.AppImage
+          if-no-files-found: error
+          retention-days: 7
