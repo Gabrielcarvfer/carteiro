@@ -1,9 +1,27 @@
 # Supply-chain policy, enforced in CI by cargo-deny.
 
+[graph]
+# Audit what ships (Linux AppImage, Windows MSI, Android APK), not every
+# platform's optional dependencies (e.g. D-Bus crates used only on FreeBSD).
+targets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc", "aarch64-linux-android", "x86_64-linux-android"]
+
 [advisories]
 version = 2
 # Fail on any crate with a RustSec security advisory or that was yanked.
 yanked = "deny"
+# Reviewed "unmaintained" notices (none is a vulnerability). Anything new,
+# unmaintained or vulnerable, still fails the build.
+ignore = [
+    # Compile-time only: a proc-macro behind gtk-rs 0.18, used by Tauri's
+    # Linux tray icon; nothing newer is available through Tauri yet.
+    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error: build-time only, via Tauri's GTK stack; no upgrade available" },
+    # Not built for any shipped target: zbus comes with notify-rust on
+    # BSD-style Unix only, and Carteiro uses that plugin on Windows and
+    # Android alone. cargo-deny merges the targets' graphs and reports it.
+    { id = "RUSTSEC-2026-0370", reason = "zvariant: not built on Linux, Windows or Android (cargo tree -i zbus is empty for each)" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names: not built on Linux, Windows or Android" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive: not built on Linux, Windows or Android" },
+]
 
 [bans]
 wildcards = "deny"
