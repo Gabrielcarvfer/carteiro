@@ -10,6 +10,7 @@ pub mod carddav;
 pub mod calendar;
 pub mod contacts;
 pub mod dedup;
+pub mod doctext;
 pub mod error;
 pub mod graph;
 pub mod http;

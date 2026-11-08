@@ -1350,6 +1350,8 @@ pub fn run() {
             if app_settings.microsoft.client_id.is_empty() {
                 app_settings.microsoft = built.microsoft;
             }
+            // Mail indexed before attachment contents were searchable: once more.
+            let _ = store.reindex_for_attachments();
             // People from mail already here, once (new mail is collected as it arrives).
             if store.get_secret("contacts_collected").ok().flatten().is_none() {
                 let _ = store.collect_from_stored_mail();

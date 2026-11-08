@@ -94,6 +94,11 @@ CREATE TABLE IF NOT EXISTS invite_msgs (
     msg INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
     uids TEXT NOT NULL
 );
+-- Text inside attachments (PDF, Office…) by the file's SHA-256, read once.
+CREATE TABLE IF NOT EXISTS attachment_text (
+    hash TEXT PRIMARY KEY,
+    text TEXT NOT NULL
+);
 -- ClamAV results by content (SHA-256), so the same bytes aren't scanned
 -- again: clean ones for that signature version, infected ones for good.
 CREATE TABLE IF NOT EXISTS scan_cache (
@@ -1051,6 +1056,31 @@ impl Store {
         )?;
         let rows = st.query_map([limit], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    /// Whether a message's text is already in the search index.
+    pub fn is_indexed(&self, msg: i64) -> Result<bool> {
+        Ok(self.conn.query_row("SELECT EXISTS(SELECT 1 FROM msg_text WHERE msg = ?1 AND status = 'clean')", [msg], |r| r.get(0))?)
+    }
+
+    pub fn attachment_text(&self, hash: &str) -> Result<Option<String>> {
+        Ok(self.conn.query_row("SELECT text FROM attachment_text WHERE hash = ?1", [hash], |r| r.get(0)).optional()?)
+    }
+
+    pub fn set_attachment_text(&self, hash: &str, text: &str) -> Result<()> {
+        self.conn.execute("INSERT OR REPLACE INTO attachment_text (hash, text) VALUES (?1, ?2)", params![hash, text])?;
+        Ok(())
+    }
+
+    /// Clean messages indexed before attachment contents were searchable
+    /// are indexed again (once). Returns how many.
+    pub fn reindex_for_attachments(&self) -> Result<usize> {
+        if self.get_secret("index_version")?.as_deref() == Some("2") {
+            return Ok(0);
+        }
+        let n = self.conn.execute("DELETE FROM msg_text WHERE status = 'clean'", [])?;
+        self.set_secret("index_version", "2")?;
+        Ok(n)
     }
 
     /// Records a scan result: the text is kept only for clean messages.

@@ -9,6 +9,7 @@ description = "Protocol, storage, threading and rules engine for Carteiro"
 [dependencies]
 mail-parser = "0.9"
 # Already in the tree via rustls; used directly for SHA-256 instead of another crate.
+miniz_oxide = "0.8"
 ring = "0.17"
 rusqlite = { version = "0.32", features = ["bundled"] }
 # ring instead of aws-lc-rs: no cmake/nasm needed for Windows and Android cross builds.

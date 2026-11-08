@@ -61,8 +61,11 @@ pub struct MessageView {
 /// After a clean scan: the message's text becomes searchable and its
 /// invitations go into the calendar.
 fn on_clean(store: &Mutex<Store>, id: i64, raw: &[u8]) -> Result<()> {
+    if !lock(store)?.is_indexed(id)? {
+        let text = search_text(store, raw);
+        lock(store)?.set_text(id, true, &text)?;
+    }
     let mut st = lock(store)?;
-    st.set_text(id, true, &search_text(raw))?;
     if let Some(m) = st.message(id)? {
         if crate::invites::import(&mut st, id, &m.from.email, raw, crate::calendar::now()).is_ok_and(|t| !t.is_empty()) {
             INVITES_CHANGED.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -147,12 +150,40 @@ async fn fetch_bodies(store: &Mutex<Store>, account: &Account, password: &Creden
     Ok(())
 }
 
-/// Searchable text of a message: the plain-text part, or the HTML's text.
-fn search_text(raw: &[u8]) -> String {
+/// Searchable text of a message: the plain-text part (or the HTML's text),
+/// then each attachment's name and the text inside it (PDF, Office…). A
+/// file's text is read once and kept by its SHA-256, so the same file in
+/// other messages isn't read again. Only for messages ClamAV found clean.
+fn search_text(store: &Mutex<Store>, raw: &[u8]) -> String {
     let body = parse_body(raw);
     let text = body.text.or_else(|| body.html.as_deref().map(crate::safety::strip_tags)).unwrap_or_default();
     // A generous cap keeps the index small (long threads repeat their history).
-    text.chars().take(64 * 1024).collect()
+    let mut out: String = text.chars().take(64 * 1024).collect();
+    for (i, a) in body.attachments.iter().enumerate() {
+        out.push('\n');
+        out.push_str(&a.name);
+        if a.danger.is_some() || a.size > crate::doctext::MAX_FILE {
+            continue;
+        }
+        let Some((_, bytes)) = crate::message::attachment_bytes(raw, i) else { continue };
+        let hash = crate::update::sha256_hex(&bytes);
+        let known = lock(store).ok().and_then(|st| st.attachment_text(&hash).ok().flatten());
+        let inside = match known {
+            Some(t) => t,
+            None => {
+                let t = crate::doctext::extract(&a.name, &a.mime, &bytes).unwrap_or_default();
+                if let Ok(st) = lock(store) {
+                    let _ = st.set_attachment_text(&hash, &t);
+                }
+                t
+            }
+        };
+        if !inside.is_empty() {
+            out.push(' ');
+            out.push_str(&inside);
+        }
+    }
+    out
 }
 
 /// Makes downloaded messages searchable by content, but only those the
@@ -1121,5 +1152,39 @@ mod file_name_tests {
         drop(st);
         on_clean(&store, id, raw).unwrap();
         assert!(!take_invites_changed(), "nothing new the second time");
+    }
+
+    #[test]
+    fn words_inside_attachments_are_searchable_and_read_once() {
+        use super::*;
+        let store = std::sync::Mutex::new(Store::open_in_memory().unwrap());
+        let ep = crate::Endpoint { host: "h".into(), port: 993, security: crate::Security::Tls, allow_insecure: false };
+        let mut a = Account {
+            id: 0, name: "Me".into(), email: "me@x.org".into(), username: "me".into(), incoming_protocol: crate::Protocol::Imap,
+            incoming: ep.clone(), smtp: ep, smtp_username: None, signature: String::new(), auth: crate::AuthMethod::Password,
+        };
+        store.lock().unwrap().add_account(&mut a).unwrap();
+        let docx = crate::doctext::tests::zip(&[("word/document.xml", "<w:p><w:t>Kangaroo migration budget</w:t></w:p>")], true);
+        let mail = |mid: &str| {
+            let b64 = crate::b64::encode(&docx);
+            format!("From: a@x.org\r\nSubject: Report {mid}\r\nMessage-ID: <{mid}@x.org>\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nSee attached.\r\n--b\r\nContent-Type: application/vnd.openxmlformats-officedocument.wordprocessingml.document; name=\"Plan Q3.docx\"\r\nContent-Disposition: attachment; filename=\"Plan Q3.docx\"\r\nContent-Transfer-Encoding: base64\r\n\r\n{b64}\r\n--b--\r\n").into_bytes()
+        };
+        for (uid, mid) in [(1, "m1"), (2, "m2")] {
+            let raw = mail(mid);
+            let id = store.lock().unwrap().insert_message(&crate::store::NewMessage {
+                account_id: a.id, folder: "INBOX".into(), uid: Some(uid), pop_uidl: None, meta: parse_meta(&raw), seen: false, flagged: false, size: raw.len() as u64, raw: None,
+            }).unwrap();
+            on_clean(&store, id, &raw).unwrap();
+            if uid == 1 {
+                // Prove the second message uses the stored text: change it.
+                let hash = crate::update::sha256_hex(&docx);
+                store.lock().unwrap().set_attachment_text(&hash, "Kangaroo migration budget (remembered)").unwrap();
+            }
+        }
+        let st = store.lock().unwrap();
+        let found = |q: &str| st.list_threads(a.id, "INBOX", Some(q), 10, 0).unwrap().len();
+        assert_eq!(found("kangaroo"), 2, "a word inside the Word file");
+        assert_eq!(found("remembered"), 1, "the same file in another message isn't read again");
+        assert_eq!(found("\"Plan Q3\""), 2, "attachment names too");
     }
 }

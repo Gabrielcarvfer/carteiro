@@ -3,7 +3,7 @@
 //! and must never panic. Deterministic, so failures reproduce.
 
 use mail_core::{
-    b64, backup, invites, recur, carddav, contacts, dedup, graph, http, ical, imap, imap_proto, message, presets, rules, safety, search, settings_io,
+    b64, backup, doctext, invites, recur, carddav, contacts, dedup, graph, http, ical, imap, imap_proto, message, presets, rules, safety, search, settings_io,
     store, threading, tracking, tz, update, xml,
 };
 
@@ -377,4 +377,26 @@ fn invitations_and_repeat_rules() {
             let _ = mail_core::ical::parse_events(&part);
         }
     });
+}
+
+/// Attachments are strangers' files: damaged PDFs and office documents must
+/// give up quietly, within memory bounds.
+#[test]
+fn attachment_documents() {
+    let content = b"BT /F1 12 Tf (Invoice \\(paid\\)) Tj [(Tot) -300 (al)] TJ ET";
+    let packed = miniz_oxide::deflate::compress_to_vec_zlib(content, 6);
+    let mut pdf = b"%PDF-1.4\n1 0 obj << /Filter /FlateDecode >>\nstream\n".to_vec();
+    pdf.extend(&packed);
+    pdf.extend(b"\nendstream endobj 2 0 obj << >>\nstream\nbegincmap 1 beginbfchar <01> <0041> endbfchar 1 beginbfrange <10> <20> <0061> endbfrange endcmap\nendstream %%EOF");
+    fuzz("pdf", &[&pdf], 3_000, |b| {
+        if let Some(t) = doctext::extract("f.pdf", "", b) {
+            assert!(t.chars().count() <= 200_000);
+        }
+    });
+    let docx = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/sample.docx")).unwrap_or_default();
+    if !docx.is_empty() {
+        fuzz("docx", &[&docx], 3_000, |b| {
+            let _ = doctext::extract("f.docx", "", b);
+        });
+    }
 }

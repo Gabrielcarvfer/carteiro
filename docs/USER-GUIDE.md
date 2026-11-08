@@ -16,7 +16,7 @@ The left rail (the bottom bar on phones) switches between **Mail**, **Calendar**
 - **Older mail:** the first sync lists each folder's latest 500 messages; scrolling to the end of the list loads older ones from the server, a page at a time.
 - **Act on messages:** flag, mark read or unread, archive, delete, and *Move to* any folder. With no connection, sending goes to the Outbox, and every action is replayed when you're back online.
 - **Filter:** the filter button limits the list to *Unread*, *Flagged*, *To me* or *Has attachments*. Tap the chip above the list to show everything again.
-- **Search:** the search box understands words and these terms, which combine:
+- **Search:** the search box looks in messages and inside their attachments (PDF, Word, PowerPoint and Excel files, their LibreOffice counterparts, and text files), once ClamAV has found them clean. It understands words and these terms, which combine:
   `from:ana`, `to:bob`, `subject:invoice`, `has:attachment`, `is:unread`, `is:flagged`, `after:2026-11-01`, `before:2026-12-01`, and `from:"Ana Souza"` for phrases.
 - **Rules:** the Rules button (or *Create rule…* on a message) moves, flags or marks incoming mail by sender, recipient, subject or words, in the order you set. *Run rules on this folder now* applies them to mail already there.
 - **Images and safety:** remote images stay blocked until you choose *Load images*, and even then trackers stay blocked. A badge on each message says whether ClamAV has checked it; attachments can be saved only once they pass.
