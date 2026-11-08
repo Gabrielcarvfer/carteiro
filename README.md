@@ -1,278 +1,60 @@
-# Carteiro
+<p align="center">
+  <img src="ui/logo.svg" width="112" alt="Carteiro logo">
+</p>
 
-An email and calendar client with an Outlook-style layout. On a wide screen it shows a three-pane window like Outlook on the web; on a phone it switches to one pane at a time, like Outlook mobile. Targets Windows and Android first; Linux works too.
+<h1 align="center">Carteiro</h1>
 
-## Why Rust + Tauri 2 + plain JavaScript
+<p align="center"><b>Your mail, calendar and contacts in one fast, private app, on Windows, Linux and Android.</b></p>
 
-| Option | Windows + Android from one codebase | Speed / size | Mail/TLS ecosystem | Verdict |
-|---|---|---|---|---|
-| **Tauri 2 (Rust core + plain JS UI)** | Yes | Small installers, native core, no JS build step | rustls, SQLite, mail-parser | **Chosen** |
-| Flutter | Yes | Good | Dart mail libraries are thinner; TLS goes through Dart | Viable second choice |
-| .NET MAUI | Yes | OK | MailKit is excellent | Weak on Linux; heavier |
-| Electron | No Android | Heavy | Node | No |
+<p align="center">
+  <img src="docs/screenshots/desktop-mail.png" alt="Carteiro on the desktop: folders, conversation list and an open conversation" width="860">
+</p>
 
-The mail engine (`crates/mail-core`) is plain Rust with no UI dependency, so it can be tested headless. The UI is plain HTML, CSS and JavaScript modules in `ui/`: no npm, no bundler, no build step. Tauri shows it in the system web view (WebView2 on Windows, Android System WebView, WebKitGTK on Linux), which is needed anyway to display HTML email.
+Carteiro is an email and calendar client with the familiar Outlook layout: folders on the left, conversations in the middle, the message on the right. On a phone it becomes one tidy pane at a time with a bottom bar. It works with any mail provider, keeps working offline, and is built to keep trackers, phishing and malware out of your inbox.
 
-## Features
+## Why Carteiro
 
-- **Mail:** IMAP and POP3 with TLS or STARTTLS, SMTP sending, unified inbox across accounts, conversations, Outlook-style rules, flags, search, works offline (Outbox for sending, and flags, moves and deletes replay on reconnect), desktop notifications, tray icon with background sync.
-- **Calendar:** day, week and month views (an agenda list on phones); Microsoft 365 / Outlook (Graph), Google and other CalDAV servers, subscribed `.ics` links, public holidays for 200+ countries with regions, and local calendars.
-- **Contacts:** your own contacts, plus Google, Microsoft 365 / Outlook and other CardDAV address books kept in sync (read-only here). Imports vCard, CSV and LDIF exports from Gmail, Outlook and Thunderbird, merging duplicates; exports vCard. The To/Cc fields suggest addresses from them.
-- **Sign-in:** passwords (the right user-name form is found automatically) or Google / Microsoft sign-in (OAuth 2.0 with PKCE).
-- **Your data:** keep the last day / week / month / 2 months / 6 months / year / all mail offline; save all mail as `.mbox`; export and import settings (never including passwords).
+- **Every account in one place.** Gmail, Outlook / Microsoft 365, and any IMAP or POP3 provider, with a unified inbox.
+- **Mail, calendar and contacts together.** Google, Microsoft and CalDAV/CardDAV calendars and address books stay in sync; public holidays for 200+ countries are one click away.
+- **Private by default.** Remote images and trackers are blocked, tracking parameters are stripped from links, and no script in an email ever runs.
+- **Protected from malware and phishing.** A built-in ClamAV engine scans every message and attachment; disguised files and lying links are flagged before you click.
+- **Works offline.** Read the last day, month, year or everything without a connection; sending and changes wait in the Outbox until you're back.
+- **Yours to keep.** Export mail as `.mbox`, contacts as vCard, and back everything up into one encrypted file you can restore on any device.
+- **Light and fast.** A native Rust core with small installers, light and dark themes, and automatic, signed updates.
 
-## Using Carteiro
+## Screenshots
 
-The left rail (the bottom bar on phones) switches between **Mail**, **Calendar** and **Contacts**. On a wide screen each section shows a list beside the open item; on a phone it shows one at a time, and Android's back gesture steps back.
-
-### Accounts
-
-- **Add an account:** at first start, or from Settings → *Manage accounts…*. Type your address. Gmail and Outlook / Microsoft 365 addresses offer **Sign in with Google / Microsoft**, which opens your browser. Any other provider takes a password; Carteiro finds the right server settings and user-name form, and you can set the IMAP/POP3 and SMTP servers by hand.
-- **More than one account:** the account menu at the top switches between them; *All inboxes* shows them together.
-
-### Mail
-
-- **Read:** messages are grouped into conversations, newest first. Older messages in a long thread stay folded until you open them, and quoted text is folded too.
-- **Write:** the compose button (the pencil on phones). The To, Cc and Bcc fields suggest addresses from your contacts as you type. Reply, Reply all and Forward are on each message.
-- **Act on messages:** flag, mark read or unread, archive, delete, and *Move to* any folder. With no connection, sending goes to the Outbox, and every action is replayed when you're back online.
-- **Filter:** the filter button limits the list to *Unread*, *Flagged*, *To me* or *Has attachments*. Tap the chip above the list to show everything again.
-- **Search:** the search box understands words and these terms, which combine:
-  `from:ana`, `to:bob`, `subject:invoice`, `has:attachment`, `is:unread`, `is:flagged`, `after:2026-11-01`, `before:2026-12-01`, and `from:"Ana Souza"` for phrases.
-- **Rules:** the Rules button (or *Create rule…* on a message) moves, flags or marks incoming mail by sender, recipient, subject or words, in the order you set. *Run rules on this folder now* applies them to mail already there.
-- **Images and safety:** remote images stay blocked until you choose *Load images*, and even then trackers stay blocked. A badge on each message says whether ClamAV has checked it; attachments can be saved only once they pass.
-- **Saved files:** attachments and exports go to **Downloads/Carteiro**, named with your local date and time.
-
-### Calendar
-
-- **Views:** day, week and month on a wide screen; an agenda on phones. Swipe sideways to change month or week, and scroll through the weeks.
-- **Events:** *New event* creates one (on phones, the + button); tap an event to edit it. Each event can have its own time zone; when it differs from yours, the event also shows your local time.
-- **Search:** the search box finds events by title, place or description.
-- **Calendars:** the menu (☰ on phones) lists your calendars with checkboxes to show or hide each one. *Add calendar* offers:
-  - Google and Microsoft calendars, brought in by those accounts automatically;
-  - any CalDAV server (Fastmail, iCloud, Nextcloud…) with its address, user name and password;
-  - a subscribed `.ics` link;
-  - public holidays for a country and, where they differ, a region;
-  - local calendars kept only on this device.
-- **Week start:** Settings → *Calendar*.
-
-### Contacts
-
-- **Browse:** contacts are listed A–Z. Tap a letter heading to see the whole alphabet and jump to any letter that has contacts. The search box finds names and addresses.
-- **Your contacts:** *New* creates one; open a contact to edit or delete it. Tapping an email address starts a message to it.
-- **Import from Gmail, Outlook or Thunderbird:** export your contacts there, then use *Import* here:
-  - **Gmail** (contacts.google.com → Export): *vCard* or *Google CSV*;
-  - **Outlook** (People → Manage → Export contacts): CSV;
-  - **Thunderbird** (Address Book → Tools → Export): vCard, CSV or LDIF.
-
-  A contact that matches one you already have (same address or phone) is merged into it instead of duplicated.
-- **Export:** saves every contact as one `.vcf` file in Downloads/Carteiro.
-- **Address books that stay in sync:** Google and Microsoft accounts bring their contacts automatically. The address-book button adds any CardDAV server (Fastmail, iCloud, Nextcloud, mailbox.org…). Synced contacts are read-only here: change them on the service and they update at the next sync. Accounts signed in before contacts existed need one fresh sign-in to grant access.
-
-### Backups and moving to another device
-
-Settings → *Your data* → **Back up everything…** saves one file, `Carteiro backup <date>.carteiro`, holding all your mail, contacts, calendars, rules, settings and passwords. It's encrypted with a passphrase you choose (PBKDF2-HMAC-SHA256 with 600,000 rounds, then AES-256-GCM), and without that passphrase nobody can open it, not even you, so write it down.
-
-- **Where it goes:** on desktop, any folder you type (a USB drive, a synced folder, another disk), or Downloads/Carteiro. On Android, Download/Carteiro, which stays even if the app is uninstalled; copy it off the phone too.
-- **Restoring:** on a new install, the welcome screen offers **Restore from a backup** (also under Settings → *Your data*). Pick the file, enter the passphrase, and everything is back, passwords included, so mail syncs right away. It replaces whatever that install had. A wrong passphrase or a damaged file changes nothing.
-- **Any device to any device:** a backup made on Android restores on Windows or Linux and the other way round.
-- This is also the way back if an app can't be updated in place, for example if an Android build was signed with a different key: back up, uninstall, install, restore.
-
-### Settings
-
-- **Background:** how often to check for mail; notifications for new mail; Carteiro keeps syncing from the tray when its window is closed.
-- **Malware scanning:** turn ClamAV on or off, update its signatures, or use your own `clamd`.
-- **Privacy:** refresh the tracker list now (it also updates daily).
-- **Your data:** how much mail to keep offline (from the last day to all of it); save all mail as `.mbox`; export or import your settings (passwords are never included); back up everything, or restore a backup (below).
-- **Updates:** turn off automatic installation, check now, or install now.
-- **About:** the version, and the licenses of the bundled software.
-- The sun/moon button switches between light and dark.
-
-## Layout
-
-```
-crates/mail-core/      protocol, storage and calendar engine (most tests live here)
-  net.rs, http.rs      TCP + TLS (rustls), STARTTLS upgrade, minimal HTTPS client
-  imap*.rs pop3.rs smtp.rs   mail protocols
-  message.rs           parsing (mail-parser) and writing (built in) of messages
-  store.rs dedup.rs    SQLite cache, threading, deduplicated attachments
-  rules.rs             rules engine
-  caldav.rs graph.rs ical.rs xml.rs calendar.rs   calendars
-  carddav.rs contacts.rs                          contacts
-  oauth.rs             Google / Microsoft sign-in
-  scan.rs safety.rs    ClamAV client, attachment and link heuristics
-  update.rs            signed self-update from GitHub releases
-  sync.rs ops.rs settings_io.rs b64.rs
-src-tauri/             app shell: commands, tray, secrets, bundled ClamAV engine
-ui/                    the interface
-scripts/               ClamAV fetch/build, local test mail server, wire check
-```
-
-## Security
-
-**Connections**
-- Implicit TLS or STARTTLS; STARTTLS is strict. If the server doesn't offer it, or refuses the upgrade, Carteiro stops and never falls back to plaintext. Data a server sends before the TLS handshake is rejected (the STARTTLS command-injection class of bugs).
-- Plaintext connections are refused unless explicitly allowed per server.
-- Certificates and host names are always verified. TLS 1.2 and 1.3 only (1.3 in practice).
-- Protocol arguments, HTTP headers and message headers are checked for CR/LF injection. HTTP never follows a redirect from HTTPS to HTTP, and never forwards credentials to another site.
-
-**Verified on the wire.** `tests/no_plaintext_credentials.rs` records every byte the client sends to fake servers in each failure scenario: refused STARTTLS, missing STARTTLS, TLS against a plaintext server, and HTTP redirects. A packet capture of the end-to-end tests (`tshark`) showed passwords, subjects and message text 0 times, and every TLS session was TLS 1.3. A control login sent deliberately in plaintext was visible, which proves the capture would have caught a leak. The same was done for the Android app, with `tcpdump` inside an emulator, covering a whole session from first launch: adding an account, syncing, reading, sending, and downloading and using ClamAV signatures. All 16 connections were TLS 1.3 from the first byte, to the mail server and `database.clamav.net`. The password, addresses, subjects and message text appeared 0 times, and a plaintext control login was again detected.
-
-**Secrets**
-- Windows: Credential Manager.
-- Linux: the Secret Service (GNOME Keyring / KWallet) via `secret-tool`, with the secret passed on stdin.
-- Android: the app-private database. Wrapping it with an Android Keystore key is still to do.
-- Exports never contain secrets.
-
-**Displaying mail**
-- HTML mail renders in a sandboxed frame: no scripts (ever), no forms, no pop-ups. A Content Security Policy blocks all remote content by default: images, CSS and fonts. `<meta http-equiv>` and `<base>` are stripped.
-- *Load images* loads a message's images over HTTPS from hosts that aren't trackers only. Tracker hosts (about 430,000):
-  - AdGuard's Tracking Protection filter, built in (`crates/mail-core/data/trackers.txt`, refreshed with `scripts/gen-trackers.py`);
-  - AdGuard's list of mail trackers disguised as the sender's own subdomains, downloaded daily (only when it changed) into the app's private folder. A download that looks truncated or isn't a host list is rejected and the previous copy kept;
-  - the subdomain names email services use for tracking (`click.`, `trk.`…). 1×1 open-tracking pixels are dropped from any host.
-
-  Tested on a phone: before loading, nothing was requested; after, only the real image was, not the built-in or the downloaded-list tracker.
-- Links lose their tracking parameters (`utm_*`, `fbclid`, `gclid`, …) before they open.
-- Every open message shows whether ClamAV has scanned it, and each attachment whether it may be saved.
-- Links open in the system browser, and only `http`, `https` and `mailto` links, never local files or other URL schemes. Invisible text-direction characters are rejected.
-- A navigation guard keeps the app window on Carteiro's own pages.
-- Tested in a browser with a hostile message that tries scripts, event handlers, `javascript:` links, remote images/CSS/fonts, iframes, objects, forms and `meta refresh`, plus HTML in the subject and sender name. Nothing ran, and no request reached the test listener.
-
-**Malware**
-- A bundled **ClamAV** engine scans every message and every downloaded calendar before formatted content or attachments are shown. It's on by default, and unscanned messages show plain text only.
-  - Carteiro starts its own `clamd`. On Linux and Android it listens on a Unix socket only you can open, so no other program can pose as the scanner. Windows' `clamd` only supports TCP, so there it listens on localhost.
-  - Signatures come from the official `freshclam`, and ClamAV verifies them with its signing certificate.
-  - Windows and Linux use the official ClamAV build pinned by SHA-256 (`scripts/fetch-clamav.sh`). Android builds ClamAV from pinned, checksum-verified sources (`scripts/build-clamav-android.sh`, Android 9+).
-- Heuristics on every platform:
-  - Dangerous attachment types: executables, scripts, macro documents and disk images.
-  - Disguised names: double extensions such as `invoice.pdf.exe`, and hidden text-direction characters.
-  - Links whose text names a different site than they open, and links to raw IP addresses.
-  - Messages with such links open as plain text.
-
-**Attachments** are saved only after passing every check: the message scanned clean, the file type isn't dangerous, and the attachment scans clean on its own. Names are sanitised, existing files are never overwritten, and saved files are readable only by you.
-
-**Backups** are sealed with the passphrase before they leave the app's private folder: the plain copy made while backing up is owner-only and deleted at once. Each 1 MiB chunk is authenticated along with its position and the file header, so a reordered, cut-short or altered backup is refused instead of restored.
-
-**Local files.** On Linux, the mail cache, calendars and exports are readable only by your user (folder `0700`, files `0600`).
-
-**Penetration tests** (local test server and fake accounts only):
-- **Man in the middle** (`tests/pentest_tls.rs`, against real `openssl s_server` instances): self-signed, wrong-host and expired certificates and TLS 1.0/1.1-only servers are all refused; a correct server connects.
-- **Hostile email, opened in the Android app** with a listener recording any request that got out:
-  - HTML in the subject, sender name, attachment name and folder name;
-  - scripts, event handlers, SVG, frames, objects, forms, `meta refresh`, `<base>`, CSS imports, fonts and backgrounds, `srcset`, media, and `javascript:`/`data:` links;
-  - breaking out of the mail frame, and UTF-7 script.
-
-  Zero requests reached the listener, even after *Load images*, and nothing was injected into the app's page. Attachment names like `../../../../.bashrc` are saved inside the Downloads folder.
-- **Header injection:** line breaks hidden in an encoded subject can't add headers (such as `Bcc:`) to a reply.
-- **Local attackers:** the data folder is owner-only, there are no listening network ports (only a one-time loopback during sign-in), and the ClamAV socket is owner-only.
-- **Third parties:** ClamAV's updater sends a per-install UUID with every update; Carteiro replaces it with a fresh random one before each update, so updates can't be linked to each other.
-
-**Robustness.** `tests/robustness.rs` is a dependency-free mutation fuzzer. It feeds corrupted input to every parser, and to the IMAP/SMTP/POP3/HTTP clients through hostile fake servers. It found and fixed 4 crash bugs, including unbounded recursion on nested IMAP parentheses. Run it longer with `FUZZ_SCALE=50`.
-
-**Supply chain**
-- Only crates.io sources are allowed, and CI fails on known advisories or yanked crates (`cargo-deny`). Builds use `--locked`.
-- The mail engine has 46 crates in total. Functionality was written in-house where that was simple and safe: base64, HTTP, XML, iCalendar, message writing, OAuth, notifications and secret storage on Linux.
-- Third-party downloads (ClamAV, Android dependencies, the GreenMail test image) are pinned by SHA-256 or image digest.
-
-## Testing
-
-```sh
-cargo test -p mail-core                                  # unit, wire and fuzz tests
-scripts/test-mail-server.sh start                        # local GreenMail + throwaway CA
-CARTEIRO_TEST_CA=$PWD/.testmail/ca.pem \
-  cargo test -p mail-core --test live_greenmail -- --ignored --test-threads=1
-CARTEIRO_CARDDAV_URL=http://127.0.0.1:5232/ \
-  cargo test -p mail-core --test live_carddav -- --ignored  # a Radicale with alice/alice-pw
-cargo test -p carteiro -- --ignored engine_detects_eicar # real ClamAV (after fetch-clamav.sh)
-```
-
-**Android.** `scripts/build-clamav-android.sh arm64-v8a|x86_64`, then `cargo tauri android init`, `scripts/prepare-android.sh` and `cargo tauri android build`. Debug builds on the emulator reach the test server at `10.0.2.2`, which the test certificate covers. Since Android apps can't be given environment variables, copy the CA to the app's data folder as `test-ca.pem` (`adb run-as dev.carteiro.mail`). Release builds never read it.
-
-The end-to-end tests use made-up accounts (`alice@carteiro.test`, `bob@carteiro.test`) on a local server, never real accounts. They cover sending, replies and threading, rules moving mail on the server, flags, POP3, the Outbox, offline actions replayed on reconnect, STARTTLS refusal, offline download and `.mbox` export. Only debug builds trust the test CA, and only when `CARTEIRO_TEST_CA` is set.
-
-## Develop
-
-Prerequisites:
-
-```sh
-brew install rustup && rustup default stable     # or your distribution's Rust
-cargo install tauri-cli --version "=2.12.4" --locked
-# Linux desktop (Fedora; use a toolbox on Silverblue/Bluefin):
-sudo dnf install webkit2gtk4.1-devel openssl-devel libayatana-appindicator-gtk3-devel librsvg2-devel libsecret
-# Android: Android Studio with the SDK and NDK, and the Rust Android targets
-```
-
-```sh
-python3 -m http.server -d ui      # UI only, in a browser, against a mock backend
-scripts/fetch-clamav.sh linux-x64 # once: the bundled ClamAV engine
-cargo tauri icon app-icon.svg     # once: generates src-tauri/icons
-scripts/install-dev-desktop.sh    # once: dock icon for dev builds (Linux)
-cargo tauri dev                   # desktop app
-```
-
-## Google and Microsoft sign-in
-
-Sign-in needs your own app registrations; client IDs of desktop apps aren't secret. Put the IDs in Settings → *Sign-in apps*, or bake them into CI builds with the repository secrets `CARTEIRO_GOOGLE_CLIENT_ID`, `CARTEIRO_GOOGLE_CLIENT_SECRET` and `CARTEIRO_MICROSOFT_CLIENT_ID`.
-
-- **Google:** in Google Cloud Console, create a project and enable the Gmail API, the CalDAV API and the Google Contacts CardDAV API. Configure the OAuth consent screen with the scopes `https://mail.google.com/`, `https://www.googleapis.com/auth/calendar` and `https://www.googleapis.com/auth/carddav`, then create an OAuth client of type *Desktop app*. Until Google verifies the app, only test users you add can sign in, and their sign-ins expire after 7 days.
-- **Microsoft:** in Entra ID → App registrations, create an app for "Accounts in any organizational directory and personal Microsoft accounts". Add the platform *Mobile and desktop applications* with redirect URI `http://localhost`, and enable *Allow public client flows*. Add these delegated permissions:
-  - `IMAP.AccessAsUser.All` and `SMTP.Send` (Office 365 Exchange Online)
-  - `Calendars.ReadWrite` and `Contacts.Read` (Microsoft Graph)
-  - `offline_access`, `openid`, `email` and `profile`
-
-  Some organisations require an admin to approve third-party apps.
-
-Sign-in opens the system browser and returns through a one-time loopback address (`127.0.0.1:<random port>`) protected by PKCE and a state check, on desktop and Android alike. On Android, switch back to Carteiro after the browser says you're signed in.
-
-## CI and releases
-
-- `ci.yml`, on every push to `master` and every pull request:
-  - engine tests and clippy on Linux and Windows;
-  - a dependency audit (`cargo-deny`, built from a pinned crates.io release, auditing the shipped platforms);
-  - the Windows MSI, the Linux AppImage and the Android APK, built as for a release. Each package is checked: unpacked, every bundled program finds its libraries, and the bundled `clamd` starts. They're kept 7 days as test artifacts, signed with throwaway keys.
-- `release.yml` builds a **Windows MSI**, a **Linux AppImage** and an **Android APK**, each with ClamAV. It runs on a `v*` tag, or manually without publishing.
-  1. All three packages are uploaded to **VirusTotal**. Any engine flagging one as malicious or suspicious stops the release; links to the reports are in the run summary.
-  2. On a tag, after the scan passes, the release is published with `SHA256SUMS` and a signed update manifest (`latest.json` + `latest.json.sig`).
-  3. The tag must match the version in `Cargo.toml`.
-- Every GitHub Action is pinned to a commit SHA; Dependabot (`.github/dependabot.yml`) opens weekly pull requests to update them.
-
-Repository secrets:
-
-| Secret | Needed for |
+| Calendar | Contacts |
 |---|---|
-| `VIRUSTOTAL_API_KEY` | Any release (nothing ships unscanned). A free VirusTotal account works. |
-| `UPDATE_SIGNING_KEY` | Any release: the Ed25519 key that signs updates. |
-| `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` | Releasing the APK (manual runs use a throwaway test key). |
-| `CARTEIRO_GOOGLE_CLIENT_ID`, `CARTEIRO_GOOGLE_CLIENT_SECRET`, `CARTEIRO_MICROSOFT_CLIENT_ID` | Google / Microsoft sign-in. |
+| <img src="docs/screenshots/desktop-calendar.png" alt="Week view with work and personal calendars"> | <img src="docs/screenshots/desktop-contacts.png" alt="Contacts grouped by letter with details"> |
 
-Create the update key once and keep a backup: if it's lost, installed copies can't receive updates any more.
+**Phishing caught, in dark mode.** The link that pretends to be the bank and the disguised `.exe` are flagged, and the attachment can't be saved.
 
-```sh
-openssl genpkey -algorithm ed25519 -out carteiro-update.pem
-gh secret set UPDATE_SIGNING_KEY < carteiro-update.pem
-```
+<img src="docs/screenshots/desktop-mail-dark.png" alt="A phishing message with warnings, in dark mode" width="860">
 
-## Updates
+**On Android:** inbox, a conversation, the agenda, and the contacts letter jump.
 
-Release builds check GitHub twice a day. An update is used only if:
+<p>
+  <img src="docs/screenshots/phone-mail.png" width="200" alt="Inbox on a phone">
+  <img src="docs/screenshots/phone-reading.png" width="200" alt="Reading a conversation on a phone">
+  <img src="docs/screenshots/phone-calendar.png" width="200" alt="Agenda on a phone">
+  <img src="docs/screenshots/phone-contacts.png" width="200" alt="Jumping to a letter in contacts">
+</p>
 
-- its manifest carries a valid signature from the release key built into the app;
-- it's newer than the running version (no downgrades);
-- the download matches the manifest's SHA-256;
-- and the bundled ClamAV doesn't flag it.
+## Install
 
-How it's applied:
+Download the latest release from the [Releases page](https://github.com/Gabrielcarvfer/carteiro/releases):
 
-- **Linux (AppImage):** the new AppImage replaces the old one, and the next start uses it. Copies installed some other way only get a notification.
-- **Windows (MSI):** it installs when Carteiro quits; Windows asks for permission.
-- **Android:** apps can't replace themselves, so Carteiro notifies you and opens the release page. Android installs the APK only if it's signed with the same key.
+- **Windows:** the `.msi` installer.
+- **Linux:** the `.AppImage`; make it executable and run it.
+- **Android (9 or newer):** the `.apk`; allow installing from your browser or file manager when Android asks.
 
-Settings → *Updates* can turn off automatic installation, check now or install now. Local builds have no update channel.
+Every release is checked by VirusTotal before it's published, and `SHA256SUMS` lists the checksums of all files.
 
-See `THIRD-PARTY.md` for ClamAV's GPL-2.0 notice.
+## Learn more
 
-## Known gaps / next steps
+- [User guide](docs/USER-GUIDE.md): accounts, mail, calendar, contacts, backups and settings.
+- [Security](SECURITY.md): how Carteiro protects you, and how that was tested.
+- [Development](DEVELOPMENT.md): building, testing, sign-in app registrations and releases.
 
-- IMAP IDLE (push), connection pooling, full-text search.
-- Drafts, rich-text compose, opening attachments directly (saving works).
-- Editing repeating calendar events (shown, but edited in the web calendar for now).
-- Android: notifications while the app is closed, and Keystore-wrapped secrets.
+Carteiro is free software under the [GPL-3.0-or-later](LICENSE) license.

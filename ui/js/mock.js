@@ -12,7 +12,7 @@ const account = {
   smtp: { host: "smtp.example.com", port: 465, security: "tls" }, signature: "",
 };
 const folders = [
-  { name: "INBOX", raw_name: "INBOX", delimiter: "/", special: "inbox", unread: 2, total: 4 },
+  { name: "INBOX", raw_name: "INBOX", delimiter: "/", special: "inbox", unread: 4, total: 12 },
   { name: "Drafts", raw_name: "Drafts", delimiter: "/", special: "drafts", unread: 0, total: 0 },
   { name: "Sent", raw_name: "Sent", delimiter: "/", special: "sent", unread: 0, total: 1 },
   { name: "Archive", raw_name: "Archive", delimiter: "/", special: "archive", unread: 0, total: 0 },
@@ -32,28 +32,42 @@ const threads = {
     { ...msg(3, "t1", ["Ana Souza", "ana@example.com"], "RE: Q3 planning", "2pm it is, I'll send an invite.", 600, false),
       has_attachments: true, attachments: [{ name: "agenda.pdf", mime: "application/pdf", size: 81234, danger: null }] },
   ],
-  t3: [{ ...msg(6, "t3", ["Billing", "billing@paypa1-secure.example"], "Your account is suspended", "Please verify your account.", 900, false,
-    "<p>Please <a href='https://paypa1-secure.example.ru/login'>www.paypal.com</a> verify.</p>"),
+  t3: [{ ...msg(6, "t3", ["Billing", "billing@mybank-secure.example"], "Your account is suspended", "Please verify your account.", 900, false,
+    "<p>Please <a href='https://mybank-secure.example.ru/login'>www.mybank.example</a> verify.</p>"),
     attachments: [{ name: "invoice.pdf.exe", mime: "application/octet-stream", size: 48213, danger: "disguised program: looks like .pdf but is .exe" }],
-    warnings: ["A link shows \"www.paypal.com\" but actually opens paypa1-secure.example.ru.", "Blocked attachment \"invoice.pdf.exe\": disguised program: looks like .pdf but is .exe."],
+    warnings: ["A link shows \"www.mybank.example\" but actually opens mybank-secure.example.ru.", "Blocked attachment \"invoice.pdf.exe\": disguised program: looks like .pdf but is .exe."],
     has_attachments: true }],
-  t2: [msg(4, "t2", ["Jira", "jira@corp.example"], "[JIRA] Build failed on main", "Build #4411 failed.", 1800, false,
+  t2: [msg(4, "t2", ["Build server", "ci@corp.example"], "Build failed on main", "Build #4411 failed.", 1800, false,
     "<h3 style='color:#c50f1f'>Build #4411 failed</h3><p>See the <a href='https://example.com'>logs</a>.</p>")],
+  t4: [{ ...msg(7, "t4", ["Marta Ribeiro", "marta@studio.example"], "Brand refresh: first drafts", "Hi! Attached are the first logo drafts. I like option B the most, curious what you think.\n\nMarta", 5400, false),
+    has_attachments: true, attachments: [{ name: "logo-drafts.pdf", mime: "application/pdf", size: 2412000, danger: null }] }],
+  t5: [msg(8, "t5", ["Lisbon Air", "bookings@lisbonair.example"], "Your trip to Porto is confirmed", "Booking ref K7Q2LP. Departure Friday 08:40 from gate B12.", 14400),
+    msg(9, "t5", ["Lisbon Air", "bookings@lisbonair.example"], "Check-in is now open", "Check in now and pick your seat.", 10800)],
+  t6: [msg(10, "t6", ["Mum", "mum@family.example"], "Sunday lunch?", "Are you coming on Sunday? Your aunt is bringing the cake.", 26000),
+    msg(11, "t6", ["Demo User", "demo@example.com"], "RE: Sunday lunch?", "Yes! I'll bring wine.", 24000)],
+  t7: [msg(12, "t7", ["Cloud Storage", "no-reply@storage.example"], "You're using 80% of your storage", "Free up space or upgrade your plan.", 90000)],
+  t8: [{ ...msg(13, "t8", ["Pedro Alves", "pedro@supplier.example"], "Invoice 2026-114", "Hello, please find the November invoice attached. Payment within 30 days.", 100000),
+    flagged: true, has_attachments: true, attachments: [{ name: "invoice-2026-114.pdf", mime: "application/pdf", size: 98000, danger: null }] }],
 };
 let rules = [];
 const day0 = Math.floor(now / 86400) * 86400;
 const calendars = [
   { id: 1, source_id: 1, source_kind: "local", source_name: "On this device", remote_id: "local", name: "My calendar", color: "#0f6cbd", read_only: false, visible: true },
-  { id: 2, source_id: 2, source_kind: "microsoft", source_name: "gabriel@work.example", remote_id: "x", name: "Work", color: "#c239b3", read_only: false, visible: true },
+  { id: 2, source_id: 2, source_kind: "microsoft", source_name: "demo@work.example", remote_id: "x", name: "Work", color: "#c239b3", read_only: false, visible: true },
 ];
 let events = [
   // 10:00-11:00 New York wall-clock time (today), as the engine stores zoned events.
   { id: 90, calendar_id: 2, title: "Call with NY office", start: day0 + 10 * 3600, end: day0 + 11 * 3600, all_day: false, floating: true, tzid: "America/New_York", recurring: false, location: "", description: "" },
-  { id: 1, calendar_id: 2, title: "Team standup", start: day0 + 9 * 3600, end: day0 + 9.25 * 3600, all_day: false, floating: false, recurring: true, location: "Teams", description: "" },
+  { id: 1, calendar_id: 2, title: "Team standup", start: day0 + 9 * 3600, end: day0 + 9.25 * 3600, all_day: false, floating: false, recurring: true, location: "Video call", description: "" },
   { id: 2, calendar_id: 2, title: "Project review", start: day0 + 11 * 3600, end: day0 + 12.5 * 3600, all_day: false, floating: false, recurring: false, location: "Room 2", description: "Q3 numbers" },
   { id: 3, calendar_id: 1, title: "Dentist", start: day0 + 86400 + 16 * 3600, end: day0 + 86400 + 17 * 3600, all_day: false, floating: false, recurring: false, location: "", description: "" },
-  { id: 4, calendar_id: 1, title: "Holiday", start: day0 + 3 * 86400, end: day0 + 4 * 86400, all_day: true, floating: false, recurring: false, location: "", description: "" },
-  { id: 5, calendar_id: 2, title: "Overlap A", start: day0 + 11.5 * 3600, end: day0 + 13 * 3600, all_day: false, floating: false, recurring: false, location: "", description: "" },
+  { id: 4, calendar_id: 1, title: "Public holiday", start: day0 + 3 * 86400, end: day0 + 4 * 86400, all_day: true, floating: false, recurring: false, location: "", description: "" },
+  { id: 6, calendar_id: 1, title: "Gym", start: day0 - 86400 + 18 * 3600, end: day0 - 86400 + 19 * 3600, all_day: false, floating: false, recurring: false, location: "", description: "" },
+  { id: 7, calendar_id: 2, title: "1:1 with Ana", start: day0 + 2 * 86400 + 14 * 3600, end: day0 + 2 * 86400 + 14.5 * 3600, all_day: false, floating: false, recurring: false, location: "", description: "" },
+  { id: 8, calendar_id: 2, title: "Q3 planning", start: day0 + 2 * 86400 + 10 * 3600, end: day0 + 2 * 86400 + 11.5 * 3600, all_day: false, floating: false, recurring: false, location: "Room 4", description: "" },
+  { id: 9, calendar_id: 1, title: "Flight to Porto", start: day0 + 4 * 86400 + 8.6 * 3600, end: day0 + 4 * 86400 + 9.6 * 3600, all_day: false, floating: false, recurring: false, location: "Gate B12", description: "" },
+  { id: 10, calendar_id: 2, title: "Sprint demo", start: day0 - 2 * 86400 + 15 * 3600, end: day0 - 2 * 86400 + 16 * 3600, all_day: false, floating: false, recurring: false, location: "", description: "" },
+  { id: 5, calendar_id: 2, title: "Design sync", start: day0 + 11.5 * 3600, end: day0 + 13 * 3600, all_day: false, floating: false, recurring: false, location: "", description: "" },
 ];
 
 const summary = (key) => {
@@ -68,6 +82,11 @@ const summary = (key) => {
 let contacts = [
   { id: 1, source_id: 1, read_only: false, uid: "a", name: "Ana Souza", emails: ["ana@example.com"], phones: ["+55 11 91234-5678"], organization: "Acme", notes: "" },
   { id: 2, source_id: 2, read_only: true, uid: "b", name: "Bob Stone", emails: ["bob@work.example"], phones: [], organization: "", notes: "Met at the conference." },
+  { id: 4, source_id: 1, read_only: false, uid: "d", name: "Marta Ribeiro", emails: ["marta@studio.example"], phones: ["+351 912 345 678"], organization: "Ribeiro Studio", notes: "" },
+  { id: 5, source_id: 2, read_only: true, uid: "e", name: "Pedro Alves", emails: ["pedro@supplier.example"], phones: [], organization: "Supplier Ltd", notes: "" },
+  { id: 6, source_id: 1, read_only: false, uid: "f", name: "Mum", emails: ["mum@family.example"], phones: ["+351 213 000 000"], organization: "", notes: "" },
+  { id: 7, source_id: 2, read_only: true, uid: "g", name: "Bruno Lima", emails: ["bruno@example.com"], phones: [], organization: "Acme", notes: "" },
+  { id: 8, source_id: 1, read_only: false, uid: "h", name: "Zoe Martins", emails: ["zoe@example.org"], phones: [], organization: "", notes: "" },
   { id: 3, source_id: 1, read_only: false, uid: "c", name: "Carol Lima", emails: ["carol@example.org", "c.lima@work.example"], phones: [], organization: "", notes: "" },
 ];
 
@@ -122,7 +141,7 @@ export async function mock(cmd, a) {
     case "update_status": case "check_update": return { enabled: true, current: "0.1.0", available: "0.2.0", ready: false, message: "Carteiro 0.2.0 is available." };
     case "install_update": return null;
     case "tracker_status": case "update_trackers": return { builtin: 119175, downloaded: 308642, updated: Math.floor(Date.now() / 1000) - 3600 };
-    case "list_contacts": { const q = (a.query ?? "").toLowerCase(); return contacts.filter((c) => (c.name + " " + c.emails.join(" ")).toLowerCase().includes(q)); }
+    case "list_contacts": { const q = (a.query ?? "").toLowerCase(); return contacts.filter((c) => (c.name + " " + c.emails.join(" ")).toLowerCase().includes(q)).sort((p, r) => p.name.localeCompare(r.name)); }
     case "list_contact_sources": return [{ id: 1, kind: "local", account_id: null, url: "", username: "", name: "On this device" }, { id: 2, kind: "carddav", account_id: null, url: "https://dav.example.com/", username: "me", name: "Work contacts" }];
     case "save_contact": { const id = a.id ?? Date.now(); contacts = [...contacts.filter((c) => c.id !== id), { ...a.contact, id, source_id: 1, read_only: false }].sort((p, q) => p.name.localeCompare(q.name)); return id; }
     case "delete_contact": contacts = contacts.filter((c) => c.id !== a.id); return null;
