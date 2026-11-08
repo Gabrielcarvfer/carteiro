@@ -18,7 +18,7 @@ OUT="$ROOT/src-tauri/resources/clamav"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-curl -fsSL --proto '=https' -o "$WORK/$FILE" "https://github.com/Cisco-Talos/clamav/releases/download/clamav-$VERSION/$FILE"
+curl -fsSL --proto '=https' --retry 5 --retry-all-errors --retry-delay 10 --connect-timeout 30 -o "$WORK/$FILE" "https://github.com/Cisco-Talos/clamav/releases/download/clamav-$VERSION/$FILE"
 echo "$SHA  $WORK/$FILE" | sha256sum -c -
 
 rm -rf "$OUT"

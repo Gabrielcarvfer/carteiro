@@ -53,8 +53,8 @@ CMAKE_ANDROID=(
 # fetch <file> <url> <sha256>: download once, verify, unpack into $WORK.
 fetch() {
   local file="$1" url="$2" sha="$3"
-  [ -f "$SRC/$file" ] || curl -fsSL --proto '=https' -o "$SRC/$file" "$url"
-  echo "$sha  $SRC/$file" | sha256sum -c - >/dev/null
+  [ -f "$SRC/$file" ] || curl -fsSL --proto '=https' --retry 5 --retry-all-errors --retry-delay 10 --connect-timeout 30 -o "$SRC/$file" "$url"
+  echo "$sha  $SRC/$file" | sha256sum -c - >/dev/null || { echo "checksum mismatch: $file" >&2; rm -f "$SRC/$file"; exit 1; }
   tar -xf "$SRC/$file" -C "$WORK"
 }
 

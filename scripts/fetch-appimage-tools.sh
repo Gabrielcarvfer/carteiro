@@ -9,16 +9,19 @@
 set -euo pipefail
 
 DIR="${XDG_CACHE_HOME:-$HOME/.cache}/tauri"
-mkdir -p "$DIR"
+# Verified, untouched copies: the bundler patches its cached linuxdeploy in
+# place, so the copies it uses are refreshed from these on every run.
+PRISTINE="${XDG_CACHE_HOME:-$HOME/.cache}/carteiro-appimage-tools"
+mkdir -p "$DIR" "$PRISTINE"
 
 fetch() { # fetch <name in cache> <url> <sha256>
-  local out="$DIR/$1"
+  local out="$PRISTINE/$1"
   if ! echo "$3  $out" | sha256sum -c - >/dev/null 2>&1; then
-    curl -fsSL --proto '=https' -o "$out.part" "$2"
+    curl -fsSL --proto '=https' --retry 5 --retry-all-errors --retry-delay 10 --connect-timeout 30 -o "$out.part" "$2"
     echo "$3  $out.part" | sha256sum -c - >/dev/null || { echo "checksum mismatch: $2" >&2; rm -f "$out.part"; exit 1; }
     mv "$out.part" "$out"
   fi
-  chmod 755 "$out"
+  install -m 755 "$out" "$DIR/$1"
 }
 
 fetch AppRun-x86_64 \
@@ -34,7 +37,7 @@ fetch linuxdeploy-plugin-appimage.AppImage \
 fetch runtime-x86_64 \
   https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64 \
   2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d
-chmod 644 "$DIR/runtime-x86_64"
+chmod 644 "$DIR/runtime-x86_64"  # data for appimagetool, not a program to run
 
 if [ -n "${GITHUB_ENV:-}" ]; then
   echo "LDAI_RUNTIME_FILE=$DIR/runtime-x86_64" >> "$GITHUB_ENV"

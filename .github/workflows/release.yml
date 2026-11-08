@@ -94,6 +94,11 @@ jobs:
       - run: cargo tauri icon app-icon.svg
       - name: Bundle ClamAV (pinned, checksum-verified)
         run: scripts/fetch-clamav.sh linux-x64
+      - name: Cache AppImage tools
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/carteiro-appimage-tools
+          key: appimage-tools-${{ hashFiles('scripts/fetch-appimage-tools.sh') }}
       - name: AppImage tools (pinned, checksum-verified)
         run: scripts/fetch-appimage-tools.sh
       - run: cargo tauri build --bundles appimage
