@@ -55,8 +55,9 @@ CREATE TABLE IF NOT EXISTS msg_refs (
     ref_id TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_refs_ref ON msg_refs(ref_id);
--- Contacts: "local" (created / imported here) or mirrored from a CardDAV,
--- Google or Microsoft address book (replaced on every sync, read-only).
+-- Contacts: "local" (created / imported here), "collected" (people you mail
+-- with), or mirrored from a CardDAV, Google, Microsoft or Android address
+-- book (replaced on every sync, read-only).
 CREATE TABLE IF NOT EXISTS contact_sources (
     id INTEGER PRIMARY KEY,
     kind TEXT NOT NULL,
@@ -75,6 +76,28 @@ CREATE TABLE IF NOT EXISTS contacts (
     data TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_contacts_source ON contacts(source_id);
+-- Invitations received by mail: one row per series (UID), with the sender
+-- who may update or cancel it, and your own answer (never sent).
+CREATE TABLE IF NOT EXISTS invite_series (
+    uid TEXT PRIMARY KEY,
+    sender TEXT NOT NULL,
+    sequence INTEGER NOT NULL DEFAULT 0,
+    rsvp TEXT NOT NULL DEFAULT '',
+    -- Dates you removed yourself, as JSON [[from, to], ...]: kept out of updates.
+    removed TEXT NOT NULL DEFAULT '[]'
+);
+-- Messages already checked for invitations, and the series they carried.
+CREATE TABLE IF NOT EXISTS invite_msgs (
+    msg INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+    uids TEXT NOT NULL
+);
+-- Contacts deleted here that a sync or mail would otherwise bring back:
+-- the remote id for synced address books, the address for collected ones.
+CREATE TABLE IF NOT EXISTS contact_hidden (
+    source_id INTEGER NOT NULL REFERENCES contact_sources(id) ON DELETE CASCADE,
+    key TEXT NOT NULL,
+    PRIMARY KEY (source_id, key)
+);
 CREATE INDEX IF NOT EXISTS idx_contacts_name ON contacts(name COLLATE NOCASE);
 -- Search text of each downloaded message, kept only when ClamAV found it
 -- clean (status 'clean'); 'infected' rows record that it must not be indexed.
@@ -270,6 +293,9 @@ pub struct StoredEvent {
     pub etag: Option<String>,
     #[serde(flatten)]
     pub event: crate::ical::Event,
+    /// Your own answer to an invitation ("yes", "maybe", "no" or empty).
+    /// Bookkeeping on this device only: nobody is ever told.
+    pub rsvp: String,
 }
 
 pub struct NewMessage {
@@ -323,6 +349,11 @@ fn row_to_msg(r: &Row) -> rusqlite::Result<StoredMessage> {
     })
 }
 
+/// Contacts you can change here: your own and the ones collected from mail.
+fn editable(kind: &str) -> bool {
+    matches!(kind, "local" | "collected")
+}
+
 fn folder_rank(f: &FolderInfo) -> (u8, String) {
     let rank = match f.special.as_deref() {
         Some("inbox") => 0,
@@ -362,6 +393,12 @@ impl Store {
         let has_tzid = conn.prepare("SELECT tzid FROM events LIMIT 0").is_ok();
         if !has_tzid {
             conn.execute_batch("ALTER TABLE events ADD COLUMN tzid TEXT NOT NULL DEFAULT ''")?;
+        }
+        if conn.prepare("SELECT removed FROM invite_series LIMIT 0").is_err() {
+            conn.execute_batch("ALTER TABLE invite_series ADD COLUMN removed TEXT NOT NULL DEFAULT '[]'")?;
+        }
+        if conn.prepare("SELECT rsvp FROM events LIMIT 0").is_err() {
+            conn.execute_batch("ALTER TABLE events ADD COLUMN rsvp TEXT NOT NULL DEFAULT ''")?;
         }
         Ok(Self { conn })
     }
@@ -563,6 +600,8 @@ impl Store {
             self.store_raw(id, raw)?;
         }
         tx.commit()?;
+        // Best effort: a contact that can't be collected never fails a sync.
+        let _ = self.collect_from(m.account_id, &m.folder, &m.meta);
         Ok(id)
     }
 
@@ -771,7 +810,8 @@ impl Store {
 
     fn row_to_contact(r: &Row) -> rusqlite::Result<StoredContact> {
         let data: String = r.get(3)?;
-        Ok(StoredContact { id: r.get(0)?, source_id: r.get(1)?, read_only: r.get::<_, String>(2)? != "local", contact: serde_json::from_str(&data).unwrap_or_default() })
+        let kind: String = r.get(2)?;
+        Ok(StoredContact { id: r.get(0)?, source_id: r.get(1)?, read_only: !editable(&kind), contact: serde_json::from_str(&data).unwrap_or_default() })
     }
 
     /// Contacts matching every word of `query` (name, emails, organization,
@@ -788,16 +828,16 @@ impl Store {
         Ok(rows)
     }
 
-    /// Saves a contact "On this device" (new when `id` is None). Contacts
-    /// mirrored from a server can't be edited here.
+    /// Saves a contact: new ones go "On this device"; existing ones stay in
+    /// their address book. Contacts mirrored from a server can't be edited here.
     pub fn save_contact(&self, id: Option<i64>, c: &crate::contacts::Contact) -> Result<i64> {
-        let local = self.ensure_local_contacts()?;
         let data = serde_json::to_string(c)?;
         match id {
             Some(id) => {
                 let n = self.conn.execute(
-                    "UPDATE contacts SET name = ?2, search = ?3, data = ?4 WHERE id = ?1 AND source_id = ?5",
-                    params![id, c.name, Self::contact_search_text(c), data, local],
+                    "UPDATE contacts SET name = ?2, search = ?3, data = ?4
+                     WHERE id = ?1 AND source_id IN (SELECT id FROM contact_sources WHERE kind IN ('local', 'collected'))",
+                    params![id, c.name, Self::contact_search_text(c), data],
                 )?;
                 if n == 0 {
                     return Err(Error::Other("This contact comes from a synced address book; edit it there".into()));
@@ -805,6 +845,7 @@ impl Store {
                 Ok(id)
             }
             None => {
+                let local = self.ensure_local_contacts()?;
                 self.conn.execute(
                     "INSERT INTO contacts (source_id, name, search, data) VALUES (?1, ?2, ?3, ?4)",
                     params![local, c.name, Self::contact_search_text(c), data],
@@ -814,22 +855,50 @@ impl Store {
         }
     }
 
+    /// Deletes a contact here. One from a synced address book or collected
+    /// from mail is also remembered, so the next sync or message doesn't
+    /// bring it back (the address book on the server is left alone).
     pub fn delete_contact(&self, id: i64) -> Result<()> {
-        let local = self.ensure_local_contacts()?;
-        let n = self.conn.execute("DELETE FROM contacts WHERE id = ?1 AND source_id = ?2", params![id, local])?;
-        if n == 0 {
-            return Err(Error::Other("This contact comes from a synced address book; delete it there".into()));
+        let row: Option<(i64, String, String, String)> = self
+            .conn
+            .query_row(
+                "SELECT c.source_id, s.kind, c.remote_id, c.data FROM contacts c JOIN contact_sources s ON s.id = c.source_id WHERE c.id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .optional()?;
+        let Some((source, kind, remote, data)) = row else { return Ok(()) };
+        let tx = self.conn.unchecked_transaction()?;
+        let mut keys: Vec<String> = Vec::new();
+        if kind == "collected" {
+            let c: crate::contacts::Contact = serde_json::from_str(&data).unwrap_or_default();
+            keys.extend(c.emails.iter().map(|e| e.to_lowercase()));
+        } else if kind != "local" && !remote.is_empty() {
+            keys.push(remote);
         }
+        for k in keys {
+            tx.execute("INSERT OR IGNORE INTO contact_hidden (source_id, key) VALUES (?1, ?2)", params![source, k])?;
+        }
+        tx.execute("DELETE FROM contacts WHERE id = ?1", [id])?;
+        tx.commit()?;
         Ok(())
     }
 
     /// Mirrors a synced address book: its contacts are replaced as a whole.
     pub fn replace_contacts(&mut self, source_id: i64, list: &[(String, Option<String>, crate::contacts::Contact)]) -> Result<()> {
+        let hidden: HashSet<String> = {
+            let mut st = self.conn.prepare_cached("SELECT key FROM contact_hidden WHERE source_id = ?1")?;
+            let keys = st.query_map([source_id], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+            keys
+        };
         let tx = self.conn.transaction()?;
         tx.execute("DELETE FROM contacts WHERE source_id = ?1", [source_id])?;
         {
             let mut st = tx.prepare_cached("INSERT INTO contacts (source_id, remote_id, etag, name, search, data) VALUES (?1, ?2, ?3, ?4, ?5, ?6)")?;
             for (remote, etag, c) in list {
+                if hidden.contains(remote) {
+                    continue;
+                }
                 st.execute(params![source_id, remote, etag, c.name, Self::contact_search_text(c), serde_json::to_string(c)?])?;
             }
         }
@@ -868,6 +937,77 @@ impl Store {
         }
         tx.commit()?;
         Ok(report)
+    }
+
+    /// The "From your mail" address book (created on first use).
+    fn collected_source(&self) -> Result<i64> {
+        if let Ok(id) = self.conn.query_row("SELECT id FROM contact_sources WHERE kind = 'collected' ORDER BY id LIMIT 1", [], |r| r.get(0)) {
+            return Ok(id);
+        }
+        self.conn.execute("INSERT INTO contact_sources (kind, name) VALUES ('collected', 'From your mail')", [])?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Adds the people in a message to "From your mail": everyone you write
+    /// to, and everyone who writes to you, except robots (no-reply and the
+    /// like), mail in Junk or Trash, people already in your contacts, and
+    /// people you deleted.
+    pub fn collect_from(&self, account_id: i64, folder: &str, meta: &MessageMeta) -> Result<usize> {
+        let special: Option<String> = self
+            .conn
+            .query_row("SELECT special FROM folders WHERE account_id = ?1 AND name = ?2", params![account_id, folder], |r| r.get(0))
+            .optional()?
+            .flatten();
+        if matches!(special.as_deref(), Some("junk" | "trash")) {
+            return Ok(0);
+        }
+        let own: Option<String> = self
+            .conn
+            .query_row("SELECT data FROM accounts WHERE id = ?1", [account_id], |r| r.get(0))
+            .optional()?
+            .and_then(|d: String| serde_json::from_str::<Account>(&d).ok())
+            .map(|a| a.email.to_lowercase());
+        let people = std::iter::once(&meta.from).chain(&meta.to).chain(&meta.cc);
+        let mut added = 0;
+        for a in people {
+            let email = a.email.trim().to_lowercase();
+            if !crate::contacts::is_person_address(&email) || own.as_deref() == Some(email.as_str()) {
+                continue;
+            }
+            let known: bool = self.conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM contacts WHERE data LIKE ?1 ESCAPE '\\')
+                     OR EXISTS(SELECT 1 FROM contact_hidden h JOIN contact_sources s ON s.id = h.source_id WHERE s.kind = 'collected' AND h.key = ?2)",
+                params![like_pattern(&format!("\"{email}\"")), email],
+                |r| r.get(0),
+            )?;
+            if known {
+                continue;
+            }
+            let c = crate::contacts::Contact { name: a.name.trim().to_string(), emails: vec![email], ..Default::default() };
+            let Some(c) = c.normalized() else { continue };
+            let source = self.collected_source()?;
+            self.conn.execute(
+                "INSERT INTO contacts (source_id, name, search, data) VALUES (?1, ?2, ?3, ?4)",
+                params![source, c.name, Self::contact_search_text(&c), serde_json::to_string(&c)?],
+            )?;
+            added += 1;
+        }
+        Ok(added)
+    }
+
+    /// Collects contacts from all mail already stored (once, after the
+    /// feature arrived). Returns how many were added.
+    pub fn collect_from_stored_mail(&self) -> Result<usize> {
+        let mut st = self.conn.prepare("SELECT account_id, folder, from_name, from_email, recipients FROM messages")?;
+        let rows: Vec<(i64, String, String, String, String)> =
+            st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?.collect::<rusqlite::Result<_>>()?;
+        let mut added = 0;
+        for (account, folder, name, email, recipients) in rows {
+            let r: Recipients = serde_json::from_str(&recipients).unwrap_or_default();
+            let meta = MessageMeta { from: crate::message::Addr { name, email }, to: r.to, cc: r.cc, ..Default::default() };
+            added += self.collect_from(account, &folder, &meta)?;
+        }
+        Ok(added)
     }
 
     /// "Name <email>" suggestions for addresses starting with `prefix`
@@ -1113,11 +1253,151 @@ impl Store {
     // ---- calendars --------------------------------------------------------
 
     /// The always-present offline calendar.
+    /// The "Invitations" calendar (on this device) that invitations received
+    /// by mail go into.
+    pub fn invitations_calendar(&self) -> Result<i64> {
+        let local = self.ensure_local_calendar()?;
+        let src = self.calendar(local)?.map(|c| c.source_id).ok_or_else(|| Error::Other("local calendar missing".into()))?;
+        if let Some(id) = self
+            .conn
+            .query_row("SELECT id FROM calendars WHERE source_id = ?1 AND remote_id = 'invitations'", [src], |r| r.get(0))
+            .optional()?
+        {
+            return Ok(id);
+        }
+        self.upsert_calendar(src, "invitations", "Invitations", Some("#ca5010"), false)
+    }
+
+    /// Puts a series received by mail in the Invitations calendar, replacing
+    /// an earlier version. Refused (false) when someone other than the
+    /// original sender tries to change it, or when it's older than what's
+    /// there (a delayed message). Your answer is kept.
+    pub fn save_invite(&mut self, uid: &str, sender: &str, sequence: i64, instances: &[crate::ical::Event]) -> Result<bool> {
+        let cal = self.invitations_calendar()?;
+        let sender = sender.to_lowercase();
+        let existing: Option<(String, i64, String, String)> = self
+            .conn
+            .query_row("SELECT sender, sequence, rsvp, removed FROM invite_series WHERE uid = ?1", [uid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .optional()?;
+        if let Some((owner, seq, _, _)) = &existing {
+            if *owner != sender || *seq > sequence {
+                return Ok(false);
+            }
+        }
+        let removed: Vec<(i64, i64)> = existing.as_ref().and_then(|e| serde_json::from_str(&e.3).ok()).unwrap_or_default();
+        let rsvp = existing.map(|e| e.2).unwrap_or_default();
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM events WHERE calendar_id = ?1 AND remote_id = ?2", params![cal, uid])?;
+        for e in instances.iter().filter(|e| !removed.iter().any(|&(a, b)| e.start >= a && e.start < b)) {
+            tx.execute(
+                "INSERT INTO events (calendar_id, remote_id, uid, title, location, description, start, end, all_day, floating, recurring, tzid, rsvp)
+                 VALUES (?1, ?2, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                params![cal, uid, e.title, e.location, e.description, e.start, e.end, e.all_day, e.floating, e.recurring, e.tzid, rsvp],
+            )?;
+        }
+        tx.execute(
+            "INSERT INTO invite_series (uid, sender, sequence, rsvp) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(uid) DO UPDATE SET sequence = excluded.sequence",
+            params![uid, sender, sequence, rsvp],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// A cancellation from the original sender: the whole series, or one
+    /// instance (by the start it had).
+    pub fn cancel_invite(&self, uid: &str, sender: &str, instance: Option<i64>) -> Result<bool> {
+        let owner: Option<String> = self.conn.query_row("SELECT sender FROM invite_series WHERE uid = ?1", [uid], |r| r.get(0)).optional()?;
+        if owner.as_deref() != Some(sender.to_lowercase().as_str()) {
+            return Ok(false);
+        }
+        let cal = self.invitations_calendar()?;
+        match instance {
+            Some(t) => self.conn.execute(
+                "DELETE FROM events WHERE calendar_id = ?1 AND remote_id = ?2 AND (start = ?3 OR start / 86400 = ?3 / 86400)",
+                params![cal, uid, t],
+            )?,
+            None => self.conn.execute("DELETE FROM events WHERE calendar_id = ?1 AND remote_id = ?2", params![cal, uid])?,
+        };
+        Ok(true)
+    }
+
+    /// Your answer to an event ("yes", "maybe", "no", or "" to clear), for
+    /// the whole series when it's an invitation. Stays on this device.
+    pub fn set_rsvp(&self, event_id: i64, rsvp: &str) -> Result<()> {
+        if !matches!(rsvp, "" | "yes" | "maybe" | "no") {
+            return Err(Error::Other("unknown answer".into()));
+        }
+        let Some(ev) = self.event(event_id)? else { return Ok(()) };
+        if ev.calendar_id == self.invitations_calendar()? && !ev.remote_id.is_empty() {
+            self.conn.execute("UPDATE events SET rsvp = ?1 WHERE calendar_id = ?2 AND remote_id = ?3", params![rsvp, ev.calendar_id, ev.remote_id])?;
+            self.conn.execute("UPDATE invite_series SET rsvp = ?1 WHERE uid = ?2", params![rsvp, ev.remote_id])?;
+        } else {
+            self.conn.execute("UPDATE events SET rsvp = ?1 WHERE id = ?2", params![rsvp, event_id])?;
+        }
+        Ok(())
+    }
+
+    /// Removes instances of the series `event_id` belongs to that start in
+    /// [from, to) (None: unbounded), on this device only. For invitations the
+    /// range is remembered, so the organizer's later updates don't bring
+    /// those dates back. Returns how many were removed.
+    pub fn remove_series_range(&self, event_id: i64, from: Option<i64>, to: Option<i64>) -> Result<usize> {
+        let Some(ev) = self.event(event_id)? else { return Ok(0) };
+        if ev.remote_id.is_empty() {
+            self.conn.execute("DELETE FROM events WHERE id = ?1", [event_id])?;
+            return Ok(1);
+        }
+        let (a, b) = (from.unwrap_or(i64::MIN), to.unwrap_or(i64::MAX));
+        let n = self.conn.execute(
+            "DELETE FROM events WHERE calendar_id = ?1 AND remote_id = ?2 AND start >= ?3 AND start < ?4",
+            params![ev.calendar_id, ev.remote_id, a, b],
+        )?;
+        if ev.calendar_id == self.invitations_calendar()? {
+            let old: String = self.conn.query_row("SELECT removed FROM invite_series WHERE uid = ?1", [&ev.remote_id], |r| r.get(0)).optional()?.unwrap_or_else(|| "[]".into());
+            let mut ranges: Vec<(i64, i64)> = serde_json::from_str(&old).unwrap_or_default();
+            ranges.push((a, b));
+            self.conn.execute("UPDATE invite_series SET removed = ?1 WHERE uid = ?2", params![serde_json::to_string(&ranges)?, ev.remote_id])?;
+        }
+        Ok(n)
+    }
+
+    pub fn invites_checked(&self, msg: i64) -> Result<bool> {
+        Ok(self.conn.query_row("SELECT EXISTS(SELECT 1 FROM invite_msgs WHERE msg = ?1)", [msg], |r| r.get(0))?)
+    }
+
+    pub fn mark_invites(&self, msg: i64, uids: &[String]) -> Result<()> {
+        self.conn.execute("INSERT OR REPLACE INTO invite_msgs (msg, uids) VALUES (?1, ?2)", params![msg, serde_json::to_string(uids)?])?;
+        Ok(())
+    }
+
+    /// The invitations a message brought, each as its next (or last) instance.
+    pub fn invites_of(&self, msg: i64, now: i64) -> Result<Vec<StoredEvent>> {
+        let uids: Vec<String> = self
+            .conn
+            .query_row("SELECT uids FROM invite_msgs WHERE msg = ?1", [msg], |r| r.get::<_, String>(0))
+            .optional()?
+            .and_then(|j| serde_json::from_str(&j).ok())
+            .unwrap_or_default();
+        let cal = self.invitations_calendar()?;
+        let mut out = Vec::new();
+        for uid in uids {
+            let q = format!(
+                "SELECT {} FROM events e WHERE e.calendar_id = ?1 AND e.remote_id = ?2 ORDER BY (e.end < ?3), CASE WHEN e.end < ?3 THEN -e.start ELSE e.start END LIMIT 1",
+                Self::EVENT_COLS
+            );
+            if let Some(ev) = self.conn.query_row(&q, params![cal, uid, now], Self::row_to_event).optional()? {
+                out.push(ev);
+            }
+        }
+        Ok(out)
+    }
+
     pub fn ensure_local_calendar(&self) -> Result<i64> {
         if let Some(id) = self
             .conn
             .query_row(
-                "SELECT c.id FROM calendars c JOIN cal_sources s ON s.id = c.source_id WHERE s.kind = 'local' LIMIT 1",
+                "SELECT c.id FROM calendars c JOIN cal_sources s ON s.id = c.source_id WHERE s.kind = 'local' AND c.remote_id = 'local' LIMIT 1",
                 [],
                 |r| r.get(0),
             )
@@ -1276,14 +1556,15 @@ impl Store {
                 all_day: r.get(10)?,
                 floating: r.get(11)?,
                 tzid: r.get(13)?,
-                tz_offset: None,
                 recurring: r.get(12)?,
+                ..Default::default()
             },
+            rsvp: r.get(14)?,
         })
     }
 
     const EVENT_COLS: &'static str =
-        "e.id, e.calendar_id, e.remote_id, e.etag, e.uid, e.title, e.location, e.description, e.start, e.end, e.all_day, e.floating, e.recurring, e.tzid";
+        "e.id, e.calendar_id, e.remote_id, e.etag, e.uid, e.title, e.location, e.description, e.start, e.end, e.all_day, e.floating, e.recurring, e.tzid, e.rsvp";
 
     /// Events of visible calendars overlapping [from, to), by start time.
     pub fn events_between(&self, from: i64, to: i64) -> Result<Vec<StoredEvent>> {
@@ -1572,17 +1853,49 @@ mod tests {
         let src = s.add_contact_source("carddav", None, "https://dav.example/", "me", "Work").unwrap();
         s.replace_contacts(src, &[("a.vcf".into(), Some("e1".into()), c("Carol Pereira", "carol@work.example"))]).unwrap();
         s.replace_contacts(src, &[("b.vcf".into(), None, c("Dave Costa", "dave@work.example"))]).unwrap();
-        let names = |q: &str| s.list_contacts(q, 50).unwrap().into_iter().map(|x| x.contact.name).collect::<Vec<_>>();
-        assert_eq!(names(""), ["Ana Souza", "Bob Silva", "Dave Costa"], "Carol was replaced by the second sync");
-        assert_eq!(names("acme"), ["Ana Souza"]);
+        fn names(s: &Store, q: &str) -> Vec<String> {
+            s.list_contacts(q, 50).unwrap().into_iter().map(|x| x.contact.name).collect()
+        }
+        assert_eq!(names(&s, ""), ["Ana Souza", "Bob Silva", "Dave Costa"], "Carol was replaced by the second sync");
+        assert_eq!(names(&s, "acme"), ["Ana Souza"]);
         let dave = s.list_contacts("dave", 1).unwrap().remove(0);
         assert!(dave.read_only);
         assert!(s.save_contact(Some(dave.id), &dave.contact).is_err(), "synced contacts aren't edited here");
-        assert!(s.delete_contact(dave.id).is_err());
+        // Deleting a synced contact hides it from later syncs too.
+        s.delete_contact(dave.id).unwrap();
+        s.replace_contacts(src, &[("b.vcf".into(), None, c("Dave Costa", "dave@work.example")), ("e.vcf".into(), None, c("Eva Reis", "eva@work.example"))]).unwrap();
+        assert_eq!(names(&s, ""), ["Ana Souza", "Bob Silva", "Eva Reis"]);
         assert_eq!(s.suggest_addresses("bo", 5).unwrap(), [("Bob Silva".to_string(), "bob@example.org".to_string())]);
         assert_eq!(s.suggest_addresses("silva", 5).unwrap().len(), 1, "by name too");
         s.remove_contact_source(src).unwrap();
-        assert_eq!(names(""), ["Ana Souza", "Bob Silva"]);
+        assert_eq!(names(&s, ""), ["Ana Souza", "Bob Silva"]);
+    }
+
+    #[test]
+    fn contacts_collected_from_mail() {
+        use crate::message::Addr;
+        let (s, a) = store_with_account();
+        let addr = |n: &str, e: &str| Addr { name: n.into(), email: e.into() };
+        let mut m = meta("m1", &[], "Hello", 100);
+        m.from = addr("Zé Ninguém", "ze@example.org");
+        m.to = vec![addr("Me", "me@x.org"), addr("", "Team@Example.org")];
+        m.cc = vec![addr("Bot", "noreply@example.org")];
+        insert(&s, a, 1, m.clone());
+        let names = || s.list_contacts("", 50).unwrap().into_iter().map(|x| (x.contact.name, x.read_only)).collect::<Vec<_>>();
+        assert_eq!(names(), [("team@example.org".to_string(), false), ("Zé Ninguém".to_string(), false)], "not me, not robots");
+        // Already known: not added twice; deleted: not brought back.
+        let ze = s.list_contacts("ze@", 1).unwrap().remove(0);
+        s.delete_contact(ze.id).unwrap();
+        let mut again = m.clone();
+        again.message_id = "m2".into();
+        insert(&s, a, 2, again);
+        assert_eq!(names(), [("team@example.org".to_string(), false)]);
+        // Mail in Junk teaches nothing.
+        s.upsert_folder(a, "Junk", "Junk", None, Some("junk")).unwrap();
+        let mut spam = meta("m3", &[], "Win", 100);
+        spam.from = addr("Prize", "prize@scam.example");
+        s.insert_message(&NewMessage { account_id: a, folder: "Junk".into(), uid: Some(3), pop_uidl: None, meta: spam, seen: false, flagged: false, size: 1, raw: None }).unwrap();
+        assert_eq!(s.list_contacts("prize", 5).unwrap().len(), 0);
     }
 
     #[test]

@@ -2,7 +2,7 @@
 // and the event editor.
 
 import { api } from "./api.js";
-import { $, html, on, put } from "./dom.js";
+import { $, ask, choose, html, on, put } from "./dom.js";
 import { icon } from "./format.js";
 import { closeDrawer, toast } from "./app.js";
 
@@ -120,6 +120,26 @@ function range() {
     }
     default: { const s = startOfDay(a); return [s, addDays(s, 30)]; } // agenda: 30 days from the anchor
   }
+}
+
+// Your own answer to an event, shown on it: declined ones fade out.
+const rsvpClass = (e) => (e.rsvp ? `rsvp-${e.rsvp}` : "");
+export const RSVP = [["yes", "Going"], ["maybe", "Maybe"], ["no", "Not going"]];
+export function rsvpButtons(e) {
+  return html`<div class="rsvp" role="group" aria-label="Your answer">
+    ${RSVP.map(([v, l]) => html`<button class="btn ${e.rsvp === v ? "on" : ""}" data-click="rsvp" data-id="${e.id}" data-v="${v}" aria-pressed="${e.rsvp === v}">${l}</button>`)}
+  </div>`;
+}
+
+/// "Mon, 16 Nov, 10:00–10:30" (or the dates of an all-day event), in local time.
+export function eventWhen(e) {
+  const s = evDate(e, "start"), en = evDate(e, "end");
+  const day = (d) => d.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" });
+  if (e.all_day) {
+    const last = addDays(en, -1);
+    return +last > +s ? `${day(s)} – ${day(last)}` : day(s);
+  }
+  return `${day(s)}, ${fmtTime(s)}–${fmtTime(en)}${otherZone(e) ? ` (${otherZone(e)})` : ""}`;
 }
 
 const fmtTime = (d) => d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
@@ -297,7 +317,7 @@ function timeGrid() {
       ${days.map((d) => html`<div class="tg-day ${sameDay(d, today) ? "today" : ""}">
         <span class="dow">${d.toLocaleDateString([], { weekday: "short" })}</span><span class="dom">${d.getDate()}</span></div>`)}
       <span class="muted small tg-allday-label">all day</span>
-      ${days.map((d) => html`<div class="tg-allday">${allDay(d).map((e) => html`<button class="chip" style="--c:${color(e)}" data-click="cal-open" data-id="${e.id}">${e.title || "(no title)"}</button>`)}</div>`)}
+      ${days.map((d) => html`<div class="tg-allday">${allDay(d).map((e) => html`<button class="chip ${rsvpClass(e)}" style="--c:${color(e)}" data-click="cal-open" data-id="${e.id}">${e.title || "(no title)"}</button>`)}</div>`)}
     </div>
     <div class="grid-scroll">
       <div class="tg" style="grid-template-columns: 56px repeat(${days.length}, 1fr); height:${24 * HOUR_PX}px">
@@ -306,7 +326,7 @@ function timeGrid() {
           ${sameDay(d, today) ? html`<div class="now-line" style="top:${nowTop}px"></div>` : ""}
           ${timed(d).map(({ ev, s, e, col, cols }) => {
             const top = (s - +d) / 3600000 * HOUR_PX, height = Math.max((e - s) / 3600000 * HOUR_PX, 18);
-            return html`<button class="ev" data-click="cal-open" data-id="${ev.id}"
+            return html`<button class="ev ${rsvpClass(ev)}" data-click="cal-open" data-id="${ev.id}"
               style="--c:${color(ev)};top:${top}px;height:${height}px;left:calc(${(col / cols) * 100}% + 1px);width:calc(${100 / cols}% - 3px)">
               <strong class="ellipsis">${ev.title || "(no title)"}</strong>
               ${height > 34 ? html`<span class="ellipsis">${fmtTime(evDate(ev, "start"))}${ev.location ? ` · ${ev.location}` : ""}</span>` : ""}
@@ -327,7 +347,7 @@ function month() {
       const evs = C.events.filter((e) => evDate(e, "start") < addDays(d, 1) && evDate(e, "end") > d).sort((a, b) => b.all_day - a.all_day || a.start - b.start);
       return html`<div class="mc ${d.getMonth() !== C.anchor.getMonth() ? "other" : ""}" data-click="cal-slot" data-ts="${+d + 9 * 3600000}">
         <span class="dn ${sameDay(d, today) ? "today" : ""}">${d.getDate()}</span>
-        ${evs.slice(0, 3).map((e) => html`<button class="chip ${e.all_day ? "" : "timed"}" style="--c:${color(e)}" data-click="cal-open" data-id="${e.id}">
+        ${evs.slice(0, 3).map((e) => html`<button class="chip ${e.all_day ? "" : "timed"} ${rsvpClass(e)}" style="--c:${color(e)}" data-click="cal-open" data-id="${e.id}">
           ${e.all_day ? "" : html`<span class="t">${fmtTime(evDate(e, "start"))}</span>`}${e.title || "(no title)"}</button>`)}
         ${evs.length > 3 ? html`<button class="more" data-click="cal-goto-day" data-ts="${+d}">+${evs.length - 3} more</button>` : ""}
       </div>`;
@@ -343,7 +363,7 @@ function monthCell(d, today) {
   const evs = C.events.filter((e) => evDate(e, "start") < addDays(d, 1) && evDate(e, "end") > d).sort((a, b) => b.all_day - a.all_day || a.start - b.start);
   return html`<div class="mc ${monthKey(d) !== monthKey(C.anchor) ? "other" : ""}" data-m="${monthKey(d)}" data-click="cal-slot" data-ts="${+d + 9 * 3600000}">
     <span class="dn ${sameDay(d, today) ? "today" : ""}">${d.getDate()}</span>
-    ${evs.slice(0, 3).map((e) => html`<button class="chip ${e.all_day ? "" : "timed"}" style="--c:${color(e)}" data-click="cal-open" data-id="${e.id}">
+    ${evs.slice(0, 3).map((e) => html`<button class="chip ${e.all_day ? "" : "timed"} ${rsvpClass(e)}" style="--c:${color(e)}" data-click="cal-open" data-id="${e.id}">
       ${e.all_day ? "" : html`<span class="t">${fmtTime(evDate(e, "start"))}</span>`}${e.title || "(no title)"}</button>`)}
     ${evs.length > 3 ? html`<button class="more" data-click="cal-goto-day" data-ts="${+d}">+${evs.length - 3} more</button>` : ""}
   </div>`;
@@ -409,7 +429,7 @@ function agenda() {
   return html`<div class="agenda">${days.map(([d, evs]) => html`
     <section>
       <h3 class="${sameDay(d, new Date()) ? "today" : ""}">${d.toLocaleDateString([], { weekday: "long", day: "numeric", month: "long" })}</h3>
-      ${evs.length ? evs.map((e) => html`<button class="ag-ev" data-click="cal-open" data-id="${e.id}">
+      ${evs.length ? evs.map((e) => html`<button class="ag-ev ${rsvpClass(e)}" data-click="cal-open" data-id="${e.id}">
         <span class="bar" style="background:${color(e)}"></span>
         <span class="when muted small">${e.all_day ? "All day" : html`${fmtTime(evDate(e, "start"))}<br />${fmtTime(evDate(e, "end"))}`}</span>
         <span class="what"><strong>${e.title || "(no title)"}</strong>${e.location ? html`<span class="muted small">${e.location}</span>` : ""}${otherZone(e) ? html`<span class="muted small">${otherZone(e)}</span>` : ""}</span>
@@ -457,6 +477,7 @@ function openEditor(ev) {
           <label class="stack ev-tz" ${ev.all_day ? "hidden" : ""}><span>Time zone</span>
             <select name="tz" data-change="ev-when">${zones.map((z) => html`<option value="${z}" ${z === tz ? "selected" : ""}>${z === LOCAL_TZ ? `${z} (yours)` : z}</option>`)}</select></label>
           <p class="muted small tz-note" hidden></p>
+          ${ev.id ? html`<div class="stack"><span class="label">Will you go? <span class="muted small">(only noted here; nobody is told)</span></span>${rsvpButtons(ev)}</div>` : ""}
           <label class="stack"><span>Location</span><input name="location" value="${ev.location ?? ""}" /></label>
           <label class="stack"><span>Notes</span><textarea name="description" rows="4">${ev.description ?? ""}</textarea></label>
           <div class="error" hidden></div>
@@ -532,8 +553,50 @@ on("click", "ev-save", async (el) => {
     el.disabled = false;
   }
 });
+// A series laid out on this device (an invitation): remove one date, a
+// period, everything from a date on, or all of it.
+async function removeFromSeries(ev) {
+  const day = evDate(ev, "start");
+  const later = addDays(day, 28);
+  const r = await choose("Remove which dates of this repeating event?", [
+    ["one", `Only ${day.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" })}`],
+    ["after", "This one and all later ones"],
+    ["all", "The whole series", true],
+  ], html`<p class="muted small period-title">Or every one in a period:</p>
+    <div class="period">
+      <label>From<input type="date" name="p-from" value="${dateVal(day)}" /></label>
+      <label>Until (inclusive)<input type="date" name="p-to" value="${dateVal(later)}" /></label>
+    </div>
+    <div class="choices"><button class="btn" data-ask="period">Remove this period</button></div>`, (box) => [box.querySelector("[name=p-from]").value, box.querySelector("[name=p-to]").value]);
+  if (!r) return false;
+  // Bounds in the event's own representation: wall clock for zoned/floating
+  // and all-day events, exact time otherwise.
+  const wall = ev.all_day || ev.floating;
+  const at = (d) => (wall ? wallToUtc(d) : Math.floor(+d / 1000));
+  const startOf = (s) => { const [y, m, d] = s.split("-").map(Number); return new Date(y, m - 1, d); };
+  let from = null, to = null;
+  if (r.choice === "one") { from = ev.start; to = ev.start + 1; }
+  else if (r.choice === "after") from = ev.start;
+  else if (r.choice === "period") {
+    const [a, b] = r.value;
+    if (!a || !b || b < a) { toast("Pick a start date and an end date after it"); return false; }
+    from = at(startOf(a));
+    to = at(addDays(startOf(b), 1));
+  }
+  const n = await api.removeSeries(ev.id, from, to);
+  toast(n === 1 ? "Removed 1 date" : `Removed ${n} dates`);
+  return true;
+}
+
 on("click", "ev-delete", async () => {
-  if (!confirm("Delete this event?")) return;
+  const ev = C.editing;
+  if (ev.recurring && ev.remote_id && C.calendars.find((c) => c.id === ev.calendar_id)?.source_kind === "local") {
+    try {
+      if (await removeFromSeries(ev)) { closeEditor(); await load(); }
+    } catch (e) { toast(String(e)); }
+    return;
+  }
+  if (!(await ask("Delete this event?"))) return;
   try {
     await api.deleteEvent(C.editing.id);
     closeEditor();
@@ -590,7 +653,7 @@ function searchResults() {
   return html`<div class="agenda"><p class="muted small">${C.results.length} event${C.results.length === 1 ? "" : "s"} matching "${C.query}"</p>
     ${days.map(([d, evs]) => html`<section>
       <h3 class="${sameDay(d, new Date()) ? "today" : ""}">${d.toLocaleDateString([], { weekday: "long", day: "numeric", month: "long", year: "numeric" })}</h3>
-      ${evs.map((e) => html`<button class="ag-ev" data-click="cal-open" data-id="${e.id}">
+      ${evs.map((e) => html`<button class="ag-ev ${rsvpClass(e)}" data-click="cal-open" data-id="${e.id}">
         <span class="bar" style="background:${color(e)}"></span>
         <span class="when muted small">${e.all_day ? "All day" : html`${fmtTime(evDate(e, "start"))}<br />${fmtTime(evDate(e, "end"))}`}</span>
         <span class="what"><strong>${e.title || "(no title)"}</strong>${e.location ? html`<span class="muted small">${e.location}</span>` : ""}${otherZone(e) ? html`<span class="muted small">${otherZone(e)}</span>` : ""}</span>
@@ -664,7 +727,7 @@ on("click", "cal-remove", async (el) => {
   const c = C.calendars.find((x) => x.id === +el.dataset.id);
   if (!c) return;
   const what = c.source_kind === "local" ? `the calendar "${c.name}" and its events` : `"${c.source_name}" from Carteiro (nothing is deleted on the server)`;
-  if (!confirm(`Remove ${what}?`)) return;
+  if (!(await ask(`Remove ${what}?`, "Remove"))) return;
   try {
     if (c.source_kind === "local") await api.removeLocalCalendar(c.id);
     else await api.removeCalSource(c.source_id);
@@ -775,3 +838,20 @@ window.addEventListener("calendars-changed", () => {
 export function refreshCalendar() {
   if (!$("#calendar").hidden) load();
 }
+
+// Your answer is bookkeeping on this device only: the organizer and the other
+// guests are never sent anything.
+on("click", "rsvp", async (el) => {
+  const id = +el.dataset.id;
+  const v = el.classList.contains("on") ? "" : el.dataset.v;
+  try {
+    await api.setRsvp(id, v);
+  } catch (e) { return toast(String(e)); }
+  for (const b of document.querySelectorAll(`[data-click=rsvp][data-id="${id}"]`)) {
+    b.classList.toggle("on", b.dataset.v === v);
+    b.setAttribute("aria-pressed", b.dataset.v === v);
+  }
+  if (C.editing?.id === id) C.editing.rsvp = v;
+  document.dispatchEvent(new CustomEvent("rsvp-changed", { detail: { id, rsvp: v } }));
+  if (C.events) load();
+});

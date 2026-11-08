@@ -26,6 +26,19 @@ pub struct Event {
     /// start, for the VTIMEZONE written with it. Computed by the UI.
     #[serde(skip_serializing)]
     pub tz_offset: Option<i32>,
+    /// What the engine needs to expand a series itself (feeds and mailed
+    /// invitations; servers expand their own). Not sent to the interface.
+    #[serde(skip)]
+    pub rrule: String,
+    #[serde(skip)]
+    pub exdates: Vec<i64>,
+    /// For a changed instance of a series: the start it replaces.
+    #[serde(skip)]
+    pub recurrence_id: Option<i64>,
+    #[serde(skip)]
+    pub sequence: i64,
+    #[serde(skip)]
+    pub cancelled: bool,
 }
 
 // ---- dates (proleptic Gregorian, no external crate) --------------------------
@@ -231,7 +244,17 @@ pub fn parse_events(ics: &str) -> Vec<Event> {
                     "SUMMARY" => e.title = unescape(value),
                     "LOCATION" => e.location = unescape(value),
                     "DESCRIPTION" => e.description = unescape(value),
-                    "RRULE" | "RECURRENCE-ID" => e.recurring = true,
+                    "RRULE" => {
+                        e.recurring = true;
+                        e.rrule = value.trim().to_string();
+                    }
+                    "RECURRENCE-ID" => {
+                        e.recurring = true;
+                        e.recurrence_id = parse_datetime(value).map(|x| x.0);
+                    }
+                    "EXDATE" => e.exdates.extend(value.split(',').filter_map(|v| parse_datetime(v).map(|x| x.0))),
+                    "SEQUENCE" => e.sequence = value.trim().parse().unwrap_or(0),
+                    "STATUS" => e.cancelled = value.trim().eq_ignore_ascii_case("CANCELLED"),
                     "DTSTART" => {
                         if let Some((t, is_date, utc)) = parse_datetime(value) {
                             e.start = t;
@@ -252,6 +275,22 @@ pub fn parse_events(ics: &str) -> Vec<Event> {
         }
     }
     out
+}
+
+/// The calendar's METHOD (REQUEST, CANCEL, PUBLISH, REPLY…), upper-case;
+/// empty when there is none.
+pub fn calendar_method(ics: &str) -> String {
+    let mut depth = 0usize;
+    for line in unfold(ics).lines() {
+        let Some((name, _, value)) = split_prop(line.trim_end_matches('\r')) else { continue };
+        match name.as_str() {
+            "BEGIN" => depth += 1,
+            "END" => depth = depth.saturating_sub(1),
+            "METHOD" if depth == 1 => return value.trim().to_ascii_uppercase(),
+            _ => {}
+        }
+    }
+    String::new()
 }
 
 /// The TZID parameter of a property ("TZID=Europe/Berlin", maybe quoted), as IANA.

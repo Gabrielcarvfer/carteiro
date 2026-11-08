@@ -54,6 +54,19 @@ pub struct MessageView {
     /// Remote images in the HTML (none load unless the user asks; tracker
     /// hosts never do).
     pub remote_images: Vec<crate::tracking::RemoteImage>,
+    /// Calendar invitations it carried, as now in the Invitations calendar.
+    pub invites: Vec<crate::store::StoredEvent>,
+}
+
+/// After a clean scan: the message's text becomes searchable and its
+/// invitations go into the calendar.
+fn on_clean(store: &Mutex<Store>, id: i64, raw: &[u8]) -> Result<()> {
+    let mut st = lock(store)?;
+    st.set_text(id, true, &search_text(raw))?;
+    if let Some(m) = st.message(id)? {
+        let _ = crate::invites::import(&mut st, id, &m.from.email, raw, crate::calendar::now());
+    }
+    Ok(())
 }
 
 /// Leading levels of `refs` (parent first) not among `present`.
@@ -145,7 +158,7 @@ pub async fn index_clean_text(store: &Mutex<Store>, scanner: &ScannerConfig) -> 
         }
         for (id, raw) in batch {
             match scan::scan(scanner, &raw).await {
-                Verdict::Clean => lock(store)?.set_text(id, true, &search_text(&raw))?,
+                Verdict::Clean => on_clean(store, id, &raw)?,
                 Verdict::Infected { .. } => lock(store)?.set_text(id, false, "")?,
                 Verdict::NotScanned { .. } => return Ok(done),
             }
@@ -165,7 +178,7 @@ async fn build_views(store: &Mutex<Store>, msgs: Vec<StoredMessage>, scanner: &S
             Some(raw) => {
                 let verdict = scan::scan(scanner, &raw).await;
                 match &verdict {
-                    Verdict::Clean => lock(store)?.set_text(m.id, true, &search_text(&raw))?,
+                    Verdict::Clean => on_clean(store, m.id, &raw)?,
                     Verdict::Infected { .. } => lock(store)?.set_text(m.id, false, "")?,
                     Verdict::NotScanned { .. } => {}
                 }
@@ -181,6 +194,7 @@ async fn build_views(store: &Mutex<Store>, msgs: Vec<StoredMessage>, scanner: &S
                 for a in body.attachments.iter().filter(|a| a.danger.is_some()) {
                     warnings.push(format!("Blocked attachment \"{}\": {}.", a.name, a.danger.as_deref().unwrap_or("")));
                 }
+                let invites = lock(store)?.invites_of(m.id, crate::calendar::now())?;
                 let has_quote = !quoted.is_empty() || body.html.as_deref().is_some_and(|h| h.contains("<blockquote") || h.contains("gmail_quote") || h.contains("divRplyFwdMsg"));
                 MessageView {
                     msg: m,
@@ -191,6 +205,7 @@ async fn build_views(store: &Mutex<Store>, msgs: Vec<StoredMessage>, scanner: &S
                     body_html: if blocked { None } else { body.html.as_deref().map(crate::safety::neutralize_html) },
                     attachments: body.attachments,
                     attachments_blocked: blocked,
+                    invites,
                     verdict,
                     warnings,
                 }
@@ -206,6 +221,7 @@ async fn build_views(store: &Mutex<Store>, msgs: Vec<StoredMessage>, scanner: &S
                 warnings: Vec::new(),
                 quote_missing: 0,
                 remote_images: Vec::new(),
+                invites: Vec::new(),
             },
         };
         views.push(view);

@@ -24,6 +24,9 @@ The left rail (the bottom bar on phones) switches between **Mail**, **Calendar**
 - **Views:** day, week and month on a wide screen; an agenda on phones. Swipe sideways to change month or week, and scroll through the weeks.
 - **Events:** *New event* creates one (on phones, the + button); tap an event to edit it. Each event can have its own time zone; when it differs from yours, the event also shows your local time.
 - **Search:** the search box finds events by title, place or description.
+- **Invitations:** when a message brings a calendar invitation (an `.ics` file or an invite from Outlook, Google and the like) and ClamAV has found it clean, the event, or the whole repeating series, goes straight into your **Invitations** calendar. Updates from the same sender replace it, and cancellations remove it. Nobody is told: Carteiro never answers invitations.
+- **Removing dates from a series:** open an invitation's event and choose *Delete*: remove only that date, it and all later ones, every one in a period you pick, or the whole series. Removed dates stay removed when the organizer sends updates. (Series from Google, Microsoft or CalDAV calendars are changed in those services.)
+- **Will you go?** On an invitation in a message, or on any event, mark *Going*, *Maybe* or *Not going*. It's your own note, kept on this device; events you won't go to fade out in the calendar.
 - **Calendars:** the menu (☰ on phones) lists your calendars with checkboxes to show or hide each one. *Add calendar* offers:
   - Google and Microsoft calendars, brought in by those accounts automatically;
   - any CalDAV server (Fastmail, iCloud, Nextcloud…) with its address, user name and password;
@@ -36,6 +39,8 @@ The left rail (the bottom bar on phones) switches between **Mail**, **Calendar**
 
 - **Browse:** contacts are listed A–Z. Tap a letter heading to see the whole alphabet and jump to any letter that has contacts. The search box finds names and addresses.
 - **Your contacts:** *New* creates one; open a contact to edit or delete it. Tapping an email address starts a message to it.
+- **People you mail with** are added automatically ("From your mail"): everyone who writes to you and everyone you write to, except no-reply and other robot addresses, mail in Junk or Trash, and people already in your contacts. Edit or delete them like your own; a deleted one doesn't come back.
+- **Phone contacts (Android):** in the address-book dialog, *Bring in* reads the contacts saved on the phone (Android asks for permission first) and keeps them up to date. Change them in the phone's own app; *Stop* removes them from Carteiro.
 - **Import from Gmail, Outlook or Thunderbird:** export your contacts there, then use *Import* here:
   - **Gmail** (contacts.google.com → Export): *vCard* or *Google CSV*;
   - **Outlook** (People → Manage → Export contacts): CSV;
@@ -43,7 +48,7 @@ The left rail (the bottom bar on phones) switches between **Mail**, **Calendar**
 
   A contact that matches one you already have (same address or phone) is merged into it instead of duplicated.
 - **Export:** saves every contact as one `.vcf` file in Downloads/Carteiro.
-- **Address books that stay in sync:** Google and Microsoft accounts bring their contacts automatically. The address-book button adds any CardDAV server (Fastmail, iCloud, Nextcloud, mailbox.org…). Synced contacts are read-only here: change them on the service and they update at the next sync. Accounts signed in before contacts existed need one fresh sign-in to grant access.
+- **Address books that stay in sync:** Google and Microsoft accounts bring their contacts automatically. The address-book button adds any CardDAV server (Fastmail, iCloud, Nextcloud, mailbox.org…). Synced contacts are read-only here: change them on the service and they update at the next sync. Deleting one removes it from Carteiro only; it stays on the service and doesn't come back here. Accounts signed in before contacts existed need one fresh sign-in to grant access.
 
 ## Backups and moving to another device
 
@@ -56,13 +61,14 @@ Settings → *Your data* → **Back up everything…** saves one file, `Carteiro
 
 ## Settings
 
-- **Background:** how often to check for mail; notifications for new mail; Carteiro keeps syncing from the tray when its window is closed.
-- **Malware scanning:** turn ClamAV on or off, update its signatures, or use your own `clamd`.
-- **Privacy:** refresh the tracker list now (it also updates daily).
-- **Your data:** how much mail to keep offline (from the last day to all of it); save all mail as `.mbox`; export or import your settings (passwords are never included); back up everything, or restore a backup (below).
-- **Updates:** turn off automatic installation, check now, or install now.
-- **About:** the version, and the licenses of the bundled software.
-- The sun/moon button switches between light and dark.
+Settings has four sections side by side: swipe sideways (or tap a title, or use the arrow keys) to move between them. Changes are saved as you make them.
+
+- **general:** your accounts; when to check for mail (every 15 minutes during working hours by default, Monday to Friday 08:00–18:00, and hourly outside them, or only when you ask); notifications; keeping Carteiro in the tray; the first day of the week.
+- **security & privacy:** turn ClamAV on or off, update its signatures, or use your own `clamd`; refresh the tracker list (it also updates daily).
+- **your data:** how much mail to keep offline (from the last day to all of it); backups (below); save all mail as `.mbox`; export or import your settings (passwords are never included).
+- **about:** updates (turn off automatic installation, check now, or install now), the version, and the licenses of the bundled software.
+
+The sun/moon button switches between light and dark.
 
 ## Updates
 

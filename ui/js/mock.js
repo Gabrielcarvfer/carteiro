@@ -30,7 +30,8 @@ const threads = {
     msg(1, "t1", ["Ana Souza", "ana@example.com"], "Q3 planning", "Hi all,\n\nCan we meet Thursday to go over the Q3 plan?\n\nAna", 7200),
     msg(2, "t1", ["Bruno Lima", "bruno@example.com"], "RE: Q3 planning", "Thursday works for me. 2pm?", 3600),
     { ...msg(3, "t1", ["Ana Souza", "ana@example.com"], "RE: Q3 planning", "2pm it is, I'll send an invite.", 600, false),
-      has_attachments: true, attachments: [{ name: "agenda.pdf", mime: "application/pdf", size: 81234, danger: null }] },
+      has_attachments: true, attachments: [{ name: "agenda.pdf", mime: "application/pdf", size: 81234, danger: null }, { name: "invite.ics", mime: "text/calendar", size: 1200, danger: null }],
+      invites: [{ id: 8, calendar_id: 3, title: "Q3 planning", start: Math.floor(now / 86400) * 86400 + 2 * 86400 + 14 * 3600, end: Math.floor(now / 86400) * 86400 + 2 * 86400 + 15 * 3600, all_day: false, floating: false, recurring: true, tzid: "", location: "Room 4", description: "", rsvp: "" }] },
   ],
   t3: [{ ...msg(6, "t3", ["Billing", "billing@mybank-secure.example"], "Your account is suspended", "Please verify your account.", 900, false,
     "<p>Please <a href='https://mybank-secure.example.ru/login'>www.mybank.example</a> verify.</p>"),
@@ -53,6 +54,7 @@ let rules = [];
 const day0 = Math.floor(now / 86400) * 86400;
 const calendars = [
   { id: 1, source_id: 1, source_kind: "local", source_name: "On this device", remote_id: "local", name: "My calendar", color: "#0f6cbd", read_only: false, visible: true },
+  { id: 3, source_id: 1, source_kind: "local", source_name: "On this device", remote_id: "invitations", name: "Invitations", color: "#ca5010", read_only: false, visible: true },
   { id: 2, source_id: 2, source_kind: "microsoft", source_name: "demo@work.example", remote_id: "x", name: "Work", color: "#c239b3", read_only: false, visible: true },
 ];
 let events = [
@@ -67,6 +69,7 @@ let events = [
   { id: 8, calendar_id: 2, title: "Q3 planning", start: day0 + 2 * 86400 + 10 * 3600, end: day0 + 2 * 86400 + 11.5 * 3600, all_day: false, floating: false, recurring: false, location: "Room 4", description: "" },
   { id: 9, calendar_id: 1, title: "Flight to Porto", start: day0 + 4 * 86400 + 8.6 * 3600, end: day0 + 4 * 86400 + 9.6 * 3600, all_day: false, floating: false, recurring: false, location: "Gate B12", description: "" },
   { id: 10, calendar_id: 2, title: "Sprint demo", start: day0 - 2 * 86400 + 15 * 3600, end: day0 - 2 * 86400 + 16 * 3600, all_day: false, floating: false, recurring: false, location: "", description: "" },
+  ...[0, 7, 14, 21].map((d, i) => ({ id: 200 + i, calendar_id: 3, remote_id: "weekly-1", title: "Weekly design review", start: day0 + (d + 1) * 86400 + 10 * 3600, end: day0 + (d + 1) * 86400 + 11 * 3600, all_day: false, floating: false, recurring: true, location: "Room 3", description: "", rsvp: "" })),
   { id: 5, calendar_id: 2, title: "Design sync", start: day0 + 11.5 * 3600, end: day0 + 13 * 3600, all_day: false, floating: false, recurring: false, location: "", description: "" },
 ];
 
@@ -103,7 +106,7 @@ export async function mock(cmd, a) {
     case "export_mail": return ["/home/demo/Downloads/Carteiro mail 2026-11-08 0130", [{ path: "/home/demo/Downloads/Carteiro mail 2026-11-08 0130/demo@example.com", folders: 5, messages: 1234, skipped: 0 }]];
     case "export_settings": return "/home/demo/Downloads/Carteiro settings 2026-11-08 0130.json";
     case "import_settings": return { report: { accounts_added: ["demo@new.example"], accounts_existing: ["demo@example.com"], needs_password: ["demo@new.example"], needs_sign_in: [], rules_added: 3, calendars_added: 1, calendars_to_readd: ["Work CalDAV"] }, ui: { week_start: "1", theme: "dark" } };
-    case "get_settings": return { offline_days: 30, close_to_tray: true, notify: true, sync_minutes: 3, auto_update: true, google: { client_id: "", client_secret: null }, microsoft: { client_id: "", client_secret: null } };
+    case "get_settings": return { offline_days: 30, close_to_tray: true, notify: true, sync_minutes: 15, work_days: [0, 1, 2, 3, 4], work_start: 480, work_end: 1080, off_hours_minutes: 60, schedule_version: 1, auto_update: true, google: { client_id: "", client_secret: null }, microsoft: { client_id: "", client_secret: null } };
     case "send_message": return "sent";
     case "guess_settings": return { incoming_protocol: "imap", incoming: account.incoming, smtp: account.smtp, note: null };
     case "add_account": return { ...a.account, id: 2 };
@@ -149,6 +152,12 @@ export async function mock(cmd, a) {
     case "export_contacts": return "~/Downloads/Carteiro/Carteiro contacts.vcf";
     case "sync_contacts": return [];
     case "suggest_addresses": return contacts.flatMap((c) => c.emails.map((e) => [c.name, e])).filter(([n, e]) => (n + " " + e).toLowerCase().includes(a.prefix.toLowerCase())).slice(0, 8);
+    case "set_rsvp": for (const t of Object.values(threads)) for (const m of t) for (const e of m.invites ?? []) if (e.id === a.eventId) e.rsvp = a.rsvp;
+      for (const e of events) if (e.id === a.eventId) e.rsvp = a.rsvp;
+      return null;
+    case "remove_series": { const ev = events.find((e) => e.id === a.eventId); const before = events.length;
+      events = events.filter((e) => !(e.title === ev.title && e.calendar_id === ev.calendar_id && e.start >= (a.from ?? -Infinity) && e.start < (a.to ?? Infinity))); return before - events.length; }
+    case "set_utc_offset": case "sync_phone_contacts": return null;
     case "list_calendars": return calendars;
     case "list_cal_sources": return [
       { id: 1, kind: "local", account_id: null, url: "", username: "", name: "On this device" },

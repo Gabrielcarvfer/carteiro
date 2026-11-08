@@ -15,6 +15,28 @@ pub struct Contact {
     pub notes: String,
 }
 
+/// Whether an address looks like a person rather than a robot (no-reply,
+/// notifications, bounces, mailing-list machinery).
+pub fn is_person_address(email: &str) -> bool {
+    let Some((local, domain)) = email.rsplit_once('@') else { return false };
+    if local.is_empty() || !domain.contains('.') || email.len() > 254 || email.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return false;
+    }
+    let l = local.to_ascii_lowercase();
+    const ROBOTS: &[&str] = &[
+        "noreply", "no-reply", "no_reply", "donotreply", "do-not-reply", "do_not_reply", "notification", "notifications", "notify",
+        "mailer-daemon", "postmaster", "bounce", "bounces", "automated", "auto-confirm", "alerts", "alert", "newsletter", "news",
+        "mailer", "daemon", "unsubscribe", "info-noreply", "updates", "digest", "system",
+    ];
+    let robot = ROBOTS.iter().any(|r| l == *r || l.starts_with(&format!("{r}-")) || l.starts_with(&format!("{r}+")))
+        || l.contains("noreply")
+        || l.contains("no-reply")
+        || l.starts_with("bounce")
+        // Variable envelope addresses: long random-looking local parts.
+        || (l.len() > 40 && l.chars().filter(|c| c.is_ascii_digit()).count() > 10);
+    !robot
+}
+
 impl Contact {
     /// Trims fields, drops empty and duplicate values, fills a missing name.
     pub fn normalized(mut self) -> Option<Contact> {
@@ -390,6 +412,17 @@ pub async fn sync_source(store: &std::sync::Mutex<crate::store::Store>, source: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn people_not_robots() {
+        for p in ["ana@example.org", "bruno.lima@corp.example", "news.anchor@tv.example"] {
+            assert!(is_person_address(p), "{p}");
+        }
+        for r in ["noreply@x.org", "no-reply@accounts.example", "notifications@github.example", "MAILER-DAEMON@x.org",
+            "bounce-123@mail.example", "do-not-reply@bank.example", "shop-noreply@x.org", "x", "a@b", "a b@c.org"] {
+            assert!(!is_person_address(r), "{r}");
+        }
+    }
 
     #[test]
     fn vcards_from_google_apple_and_outlook_2_1() {

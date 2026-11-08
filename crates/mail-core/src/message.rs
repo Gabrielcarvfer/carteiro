@@ -110,13 +110,23 @@ pub fn parse_meta(raw: &[u8]) -> MessageMeta {
     }
 }
 
+/// An attachment's file name; unnamed parts get one from their type (an
+/// invitation sent inline becomes "invitation.ics").
+fn part_name(p: &mail_parser::MessagePart) -> String {
+    if let Some(n) = p.attachment_name() {
+        return n.to_string();
+    }
+    let calendar = p.content_type().is_some_and(|c| c.ctype().eq_ignore_ascii_case("text") && c.subtype().is_some_and(|s| s.eq_ignore_ascii_case("calendar")));
+    if calendar { "invitation.ics" } else { "attachment" }.to_string()
+}
+
 pub fn parse_body(raw: &[u8]) -> Body {
     let Some(msg) = MessageParser::default().parse(raw) else { return Body::default() };
     let attachments = msg
         .attachments()
         .map(|p| AttachmentInfo {
             danger: crate::safety::attachment_risk(p.attachment_name().unwrap_or("")),
-            name: p.attachment_name().unwrap_or("attachment").to_string(),
+            name: part_name(p),
             mime: p
                 .content_type()
                 .map(|c| match c.subtype() {
@@ -143,7 +153,7 @@ pub fn parse_body(raw: &[u8]) -> Body {
 pub fn attachment_bytes(raw: &[u8], index: usize) -> Option<(String, Vec<u8>)> {
     let msg = MessageParser::default().parse(raw)?;
     let part = msg.attachments().nth(index)?;
-    Some((part.attachment_name().unwrap_or("attachment").to_string(), part.contents().to_vec()))
+    Some((part_name(part), part.contents().to_vec()))
 }
 
 fn synthetic_id(seed: &[u8]) -> String {

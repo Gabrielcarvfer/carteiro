@@ -198,11 +198,9 @@ pub fn normalize_ics_url(url: &str) -> String {
 async fn sync_ics(store: &Mutex<Store>, source: &CalSource, from: i64, to: i64, scanner: &ScannerConfig) -> Result<usize> {
     let r = crate::http::send(crate::http::Request::new("GET", &normalize_ics_url(&source.url))).await?.ok()?;
     check(scanner, &r.body, &format!("Calendar feed \"{}\"", source.name)).await?;
-    // Feeds aren't expanded by a server: recurring series show their first
-    // occurrence only (most public feeds list each date explicitly).
-    let events: Vec<_> = crate::ical::parse_events(&r.text())
+    // Feeds aren't expanded by a server: series are expanded here.
+    let events: Vec<_> = crate::recur::expand_all(crate::ical::parse_events(&r.text()), from, to, 1000)
         .into_iter()
-        .filter(|e| e.end > from && e.start < to)
         .map(|e| (String::new(), None, e))
         .collect();
     let cal = lock(store)?.upsert_calendar(source.id, "feed", &source.name, Some("#8764b8"), true)?;

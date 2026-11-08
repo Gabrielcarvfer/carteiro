@@ -4,6 +4,7 @@
 # - adds ClamAV (scripts/build-clamav-android.sh output) for each ABI;
 # - installs src-tauri/android/MainActivity.kt (system bar / keyboard insets)
 #   and Carteiro's launcher icon;
+# - asks for READ_CONTACTS (used only when the user brings phone contacts in);
 # - keeps native libraries extracted: Android only executes files from the
 #   extracted native library folder;
 # - pins the Gradle download by SHA-256 (the generated wrapper doesn't
@@ -39,6 +40,10 @@ for d in "$ROOT"/src-tauri/icons/android/mipmap-*dpi; do
   cp "$d"/ic_launcher.png "$d"/ic_launcher_round.png "$RES/$(basename "$d")/"
 done
 cp -R "$ROOT/src-tauri/android/res/." "$RES/"
+
+# Reading the phone's contacts (asked for only when the user brings them in).
+MANIFEST="$APP/app/src/main/AndroidManifest.xml"
+grep -q READ_CONTACTS "$MANIFEST" || sed -i 's|<uses-permission android:name="android.permission.INTERNET" />|&\n    <uses-permission android:name="android.permission.READ_CONTACTS" />|' "$MANIFEST"
 
 GRADLE="$APP/app/build.gradle.kts"
 grep -q useLegacyPackaging "$GRADLE" || printf '\nandroid {\n    packaging {\n        jniLibs {\n            useLegacyPackaging = true\n        }\n    }\n}\n' >> "$GRADLE"

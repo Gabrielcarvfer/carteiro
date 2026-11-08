@@ -37,6 +37,8 @@ pub struct AppState {
     tokens: Mutex<HashMap<String, (String, i64)>>,
     clam: Arc<clamav::Engine>,
     updater: updater::Updater,
+    /// Local time zone offset (minutes east of UTC), reported by the interface.
+    utc_offset: std::sync::atomic::AtomicI32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,8 +48,19 @@ pub struct AppSettings {
     close_to_tray: bool,
     /// Desktop notification for new Inbox mail.
     notify: bool,
-    /// Background sync interval.
+    /// Background sync interval during working hours.
     sync_minutes: u64,
+    /// Working hours: days (0 = Monday … 6 = Sunday) and minutes after
+    /// local midnight. Outside them mail is checked every `off_hours_minutes`
+    /// (0: only when you ask).
+    work_days: Vec<u8>,
+    work_start: u32,
+    work_end: u32,
+    off_hours_minutes: u64,
+    /// Settings format: 1 once the 3-minute default became the working-hours
+    /// schedule. Missing in older saved settings, hence 0 there (not Default's 1).
+    #[serde(default)]
+    schedule_version: u32,
     /// OAuth app registrations (client IDs are public for desktop apps).
     google: ClientConfig,
     microsoft: ClientConfig,
@@ -66,7 +79,12 @@ impl Default for AppSettings {
         Self {
             close_to_tray: true,
             notify: true,
-            sync_minutes: 3,
+            sync_minutes: 15,
+            work_days: vec![0, 1, 2, 3, 4],
+            work_start: 8 * 60,
+            work_end: 18 * 60,
+            off_hours_minutes: 60,
+            schedule_version: 1,
             // Baked in at build time from CI secrets / env vars, if provided.
             google: build_client(option_env!("CARTEIRO_GOOGLE_CLIENT_ID"), option_env!("CARTEIRO_GOOGLE_CLIENT_SECRET")),
             microsoft: build_client(option_env!("CARTEIRO_MICROSOFT_CLIENT_ID"), None),
@@ -74,6 +92,22 @@ impl Default for AppSettings {
             auto_update: true,
         }
     }
+}
+
+/// Minutes between automatic checks at local time `local` (unix seconds
+/// shifted to local time); 0 means no automatic check.
+fn sync_interval(cfg: &AppSettings, local: i64) -> u64 {
+    let day = local.div_euclid(86400);
+    let weekday = (day + 3).rem_euclid(7) as u8; // 1970-01-01 was a Thursday
+    let minute = (local.rem_euclid(86400) / 60) as u32;
+    let working = cfg.work_days.contains(&weekday) && minute >= cfg.work_start && minute < cfg.work_end;
+    if working { cfg.sync_minutes.max(5) } else { cfg.off_hours_minutes }
+}
+
+/// The interface's UTC offset in minutes (east positive), for working hours.
+#[tauri::command]
+fn set_utc_offset(state: State<'_, AppState>, minutes: i32) {
+    state.utc_offset.store(minutes.clamp(-14 * 60, 14 * 60), Ordering::Relaxed);
 }
 
 fn settings(s: &AppState) -> AppSettings {
@@ -419,7 +453,15 @@ fn get_settings(state: State<'_, AppState>) -> AppSettings {
 #[tauri::command]
 fn set_settings(state: State<'_, AppState>, config: AppSettings) -> Res<()> {
     let mut config = config;
-    config.sync_minutes = config.sync_minutes.clamp(1, 120);
+    config.sync_minutes = config.sync_minutes.clamp(5, 240);
+    config.off_hours_minutes = if config.off_hours_minutes == 0 { 0 } else { config.off_hours_minutes.clamp(15, 24 * 60) };
+    config.work_days.retain(|d| *d < 7);
+    config.work_start = config.work_start.min(24 * 60);
+    config.work_end = config.work_end.min(24 * 60);
+    // Sign-in app registrations come with the build; nothing to set here.
+    let current = settings(&state);
+    config.google = current.google;
+    config.microsoft = current.microsoft;
     lock(&state)?.set_secret("app_settings", &serde_json::to_string(&config).map_err(err)?).map_err(err)?;
     *state.settings.lock().map_err(|_| "lock poisoned")? = config;
     Ok(())
@@ -712,7 +754,8 @@ async fn sync_contacts_inner(s: &AppState) -> Vec<String> {
     }
     let sources = lock(s).and_then(|st| st.contact_sources().map_err(err)).unwrap_or_default();
     let mut errors = Vec::new();
-    for src in sources.iter().filter(|x| x.kind != "local") {
+    // Your own, collected and phone contacts have no server to sync with.
+    for src in sources.iter().filter(|x| !matches!(x.kind.as_str(), "local" | "collected" | "android")) {
         let r = match contact_credential(s, src).await {
             Ok(cred) => contacts::sync_source(&s.store, src, &cred).await.map_err(err),
             Err(e) => Err(e),
@@ -722,6 +765,34 @@ async fn sync_contacts_inner(s: &AppState) -> Vec<String> {
         }
     }
     errors
+}
+
+/// The phone's address book, read by the Android activity and mirrored
+/// here as "Phone contacts" (read-only; change them in the phone's app).
+#[tauri::command]
+fn sync_phone_contacts(state: State<'_, AppState>, contacts: Vec<(String, Contact)>) -> Res<usize> {
+    let mut st = lock(&state)?;
+    let source = match st.contact_sources().map_err(err)?.into_iter().find(|s| s.kind == "android") {
+        Some(s) => s.id,
+        None => st.add_contact_source("android", None, "", "", "Phone contacts").map_err(err)?,
+    };
+    let list: Vec<_> = contacts.into_iter().filter_map(|(id, c)| c.normalized().map(|c| (id, None, c))).collect();
+    st.replace_contacts(source, &list).map_err(err)?;
+    Ok(list.len())
+}
+
+/// Your own answer to an event: "yes", "maybe", "no" or "". Only noted on
+/// this device; the organizer and other guests are never told.
+/// Removes dates of a repeating event laid out on this device (invitations):
+/// those starting in [from, to), or all of them when both are absent.
+#[tauri::command]
+fn remove_series(state: State<'_, AppState>, event_id: i64, from: Option<i64>, to: Option<i64>) -> Res<usize> {
+    lock(&state)?.remove_series_range(event_id, from, to).map_err(err)
+}
+
+#[tauri::command]
+fn set_rsvp(state: State<'_, AppState>, event_id: i64, rsvp: String) -> Res<()> {
+    lock(&state)?.set_rsvp(event_id, &rsvp).map_err(err)
 }
 
 #[tauri::command]
@@ -829,7 +900,8 @@ fn set_calendar_visible(state: State<'_, AppState>, calendar_id: i64, visible: b
 async fn sync_calendars_inner(s: &AppState) -> Vec<String> {
     let sources = lock(s).and_then(|st| st.cal_sources().map_err(err)).unwrap_or_default();
     let mut errors = Vec::new();
-    for src in sources.iter().filter(|x| x.kind != "local") {
+    // Your own, collected and phone contacts have no server to sync with.
+    for src in sources.iter().filter(|x| !matches!(x.kind.as_str(), "local" | "collected" | "android")) {
         let r = match source_credential(s, src).await {
             Ok(cred) => calendar::sync_source(&s.store, src, cred.as_ref(), &scanner(s)).await.map_err(err),
             Err(e) => Err(e),
@@ -1166,12 +1238,39 @@ pub fn run() {
                 .flatten()
                 .and_then(|j| serde_json::from_str(&j).ok())
                 .unwrap_or_default();
-            let app_settings: AppSettings = store
+            let mut app_settings: AppSettings = store
                 .get_secret("app_settings")
                 .ok()
                 .flatten()
                 .and_then(|j| serde_json::from_str(&j).ok())
                 .unwrap_or_default();
+            // Settings saved by older versions: the old 3-minute default
+            // becomes the working-hours schedule, once.
+            if app_settings.schedule_version < 1 {
+                let fresh = AppSettings::default();
+                if app_settings.sync_minutes <= 3 {
+                    app_settings.sync_minutes = fresh.sync_minutes;
+                }
+                app_settings.work_days = fresh.work_days;
+                app_settings.work_start = fresh.work_start;
+                app_settings.work_end = fresh.work_end;
+                app_settings.off_hours_minutes = fresh.off_hours_minutes;
+                app_settings.schedule_version = 1;
+                let _ = store.set_secret("app_settings", &serde_json::to_string(&app_settings).unwrap_or_default());
+            }
+            // Sign-in registrations come with the build when none were saved.
+            let built = AppSettings::default();
+            if app_settings.google.client_id.is_empty() {
+                app_settings.google = built.google;
+            }
+            if app_settings.microsoft.client_id.is_empty() {
+                app_settings.microsoft = built.microsoft;
+            }
+            // People from mail already here, once (new mail is collected as it arrives).
+            if store.get_secret("contacts_collected").ok().flatten().is_none() {
+                let _ = store.collect_from_stored_mail();
+                let _ = store.set_secret("contacts_collected", "1");
+            }
             // Private ClamAV engine; keeps its signatures up to date.
             let clam = Arc::new(clamav::Engine::new(&dir, app.path().resource_dir().ok().as_deref()));
             let engine = clam.clone();
@@ -1185,6 +1284,7 @@ pub fn run() {
                 tokens: Mutex::new(HashMap::new()),
                 clam: clam.clone(),
                 updater: updater::Updater::new(),
+                utc_offset: std::sync::atomic::AtomicI32::new(0),
             });
             updater::spawn_background(app.handle().clone());
             // Tracker list: load the saved copy, then refresh it daily.
@@ -1223,13 +1323,20 @@ pub fn run() {
                 }
             });
 
-            // Background sync keeps running while the window is hidden.
+            // Background sync keeps running while the window is hidden:
+            // often during working hours, rarely (or never) outside them.
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
+                let mut last = calendar::now();
                 loop {
-                    let minutes = settings(&handle.state::<AppState>()).sync_minutes.max(1);
-                    tokio::time::sleep(Duration::from_secs(minutes * 60)).await;
-                    sync_all(&handle).await;
+                    tokio::time::sleep(Duration::from_secs(60)).await;
+                    let s = handle.state::<AppState>();
+                    let now = calendar::now();
+                    let every = sync_interval(&settings(&s), now + i64::from(s.utc_offset.load(Ordering::Relaxed)) * 60);
+                    if every > 0 && now - last >= every as i64 * 60 {
+                        last = now;
+                        sync_all(&handle).await;
+                    }
                 }
             });
             Ok(())
@@ -1259,6 +1366,10 @@ pub fn run() {
             export_settings,
             import_settings,
             create_backup,
+            sync_phone_contacts,
+            set_rsvp,
+            remove_series,
+            set_utc_offset,
             restore_upload,
             restore_backup,
             scanner_update_now,

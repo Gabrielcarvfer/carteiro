@@ -47,3 +47,52 @@ for (const ev of ["click", "change", "input", "keydown", "submit", "dragstart", 
     if (fn) fn(el, e);
   });
 }
+
+/// An in-app yes/no question. Web views can't be relied on to show the
+/// browser's own `confirm()` (Android's may not show it at all), so every
+/// confirmation goes through this. Resolves true for the confirming button.
+export function ask(question, yes = "Delete", danger = true) {
+  return new Promise((resolve) => {
+    const box = document.createElement("div");
+    box.className = "ask-backdrop";
+    box.innerHTML = fmt(html`<div class="ask" role="alertdialog" aria-label="${question}">
+      <p>${question}</p>
+      <div class="btn-row"><span class="spacer"></span><button class="btn" data-ask="no">Cancel</button><button class="btn ${danger ? "danger" : "primary"}" data-ask="yes">${yes}</button></div>
+    </div>`);
+    const done = (v) => { box.remove(); document.removeEventListener("keydown", key, true); resolve(v); };
+    const key = (e) => { if (e.key === "Escape") { e.stopPropagation(); done(false); } };
+    box.addEventListener("click", (e) => {
+      const b = e.target.closest("[data-ask]");
+      if (b) done(b.dataset.ask === "yes");
+      else if (e.target === box) done(false);
+    });
+    document.addEventListener("keydown", key, true);
+    document.body.append(box);
+    box.querySelector("[data-ask=yes]").focus();
+  });
+}
+
+/// Like `ask`, with several answers: resolves the chosen key, or null.
+/// `extra` is shown under the answers (it may hold more of them, with inputs);
+/// `read(box)` collects them when an answer is picked.
+export function choose(question, options, extra = "", read = () => null) {
+  return new Promise((resolve) => {
+    const box = document.createElement("div");
+    box.className = "ask-backdrop";
+    box.innerHTML = fmt(html`<div class="ask" role="alertdialog" aria-label="${question}">
+      <p>${question}</p>
+      <div class="choices">${options.map(([k, l, danger]) => html`<button class="btn ${danger ? "danger" : ""}" data-ask="${k}">${l}</button>`)}</div>
+      ${extra}
+      <div class="choices"><button class="btn" data-ask="">Cancel</button></div>
+    </div>`);
+    const done = (v) => { box.remove(); document.removeEventListener("keydown", key, true); resolve(v); };
+    const key = (e) => { if (e.key === "Escape") { e.stopPropagation(); done(null); } };
+    box.addEventListener("click", (e) => {
+      const b = e.target.closest("[data-ask]");
+      if (b) done(b.dataset.ask ? { choice: b.dataset.ask, value: read(box) } : null);
+      else if (e.target === box) done(null);
+    });
+    document.addEventListener("keydown", key, true);
+    document.body.append(box);
+  });
+}

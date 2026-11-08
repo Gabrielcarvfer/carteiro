@@ -1,7 +1,7 @@
 // Compose window and modal dialogs: rules, account setup, settings.
 
 import { api } from "./api.js";
-import { $, html, on, put } from "./dom.js";
+import { $, ask, html, on, put } from "./dom.js";
 import { bytes, folderLabel, icon } from "./format.js";
 import { WEEK_START_KEY, refreshCalendar, weekStart } from "./calendar.js";
 import { S, UNIFIED, accountById, loadAccounts, refreshFolders, refreshThreads, selectAccount, toast } from "./app.js";
@@ -409,104 +409,140 @@ on("click", "setup-save", async (el) => {
 
 // ---- settings ----------------------------------------------------------------------
 
-export async function openSettings() {
+// Settings: four sections side by side that you swipe (or tap a title) between.
+const PIVOTS = [["general", "general"], ["security", "security & privacy"], ["data", "your data"], ["about", "about"]];
+const hhmm = (m) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+const DAYS = [[0, "Mon"], [1, "Tue"], [2, "Wed"], [3, "Thu"], [4, "Fri"], [5, "Sat"], [6, "Sun"]];
+
+export async function openSettings(start = "general") {
   const [scanner, usage, app, engine, upd, trk] = await Promise.all([api.getScanner(), api.storageUsage(), api.getSettings(), api.scannerStatus(), api.updateStatus(), api.trackerStatus()]);
-  put("#modal", modal("Settings", html`
-    <div class="form">
-      <section>
-        <h3>Background</h3>
-        <label class="check"><input type="checkbox" name="close-to-tray" ${app.close_to_tray ? "checked" : ""} /> Closing the window keeps Carteiro running in the system tray</label>
-        <label class="check"><input type="checkbox" name="notify" ${app.notify ? "checked" : ""} /> Notify me when new mail arrives</label>
-        <label class="check">Check for new mail every <input type="number" name="sync-minutes" min="1" max="120" value="${app.sync_minutes}" style="width:70px" /> minutes</label>
-        <div><button class="btn primary" data-click="app-settings-save">Save</button></div>
-      </section>
-      <section>
-        <h3>${icon("shield", 16)} Malware scanning (ClamAV)</h3>
-        <p class="muted">Every message and calendar is scanned before its formatted content or attachments are shown. Dangerous attachment types and deceptive links are always flagged.</p>
-        <label class="check"><input type="checkbox" name="scan-enabled" ${scanner.enabled ? "checked" : ""} /> Scan messages and calendars</label>
-        <label class="check"><input type="radio" name="scan-mode" value="builtin" ${scanner.builtin ? "checked" : ""} data-change="scan-mode" /> Built-in ClamAV engine</label>
-        <div class="engine-status small ${engine.state}" data-show="builtin" ${scanner.builtin ? "" : "hidden"}>${engineStatus(engine)}
-          <button class="btn" data-click="scanner-update">Update signatures now</button></div>
-        <label class="check"><input type="radio" name="scan-mode" value="external" ${scanner.builtin ? "" : "checked"} data-change="scan-mode" /> A clamd server I run myself</label>
-        <div data-show="external" ${scanner.builtin ? "hidden" : ""} class="stack">
-          <label class="stack narrow-field"><span>clamd address</span><input name="scan-addr" value="${scanner.builtin ? "" : scanner.clamd_addr}" placeholder="127.0.0.1:3310" /></label>
-          <div><button class="btn" data-click="scanner-test">Test connection</button></div>
-        </div>
-        <label class="check"><input type="checkbox" name="scan-block" ${scanner.block_when_unavailable ? "checked" : ""} /> Until a message has been scanned, hide its formatted content and attachments (recommended)</label>
-        <div class="btn-row"><button class="btn primary" data-click="scanner-save">Save</button></div>
-        <div class="scan-result small" hidden></div>
-      </section>
-      <section>
-        <h3>Privacy</h3>
-        <p class="muted small">Images from the web load only when you ask, never from trackers, and links lose their tracking parameters. Scripts in mail never run.</p>
-        <div class="tracker-status small">${trackerLine(trk)}</div>
-        <div><button class="btn" data-click="trackers-update">Update tracker list now</button></div>
-      </section>
-      <section>
-        <h3>Your data</h3>
-        <label class="stack narrow-field"><span>Keep mail available offline for</span>
-          <select name="offline-days">
-            ${[[1, "The last day"], [7, "The last week"], [30, "The last month"], [61, "The last 2 months"], [183, "The last 6 months"], [365, "The last year"], [0, "All mail"]].map(([d, l]) => html`<option value="${d}" ${app.offline_days === d ? "selected" : ""}>${l}</option>`)}
-          </select></label>
-        <p class="muted small">Messages in this period are downloaded in full so they open without a connection. Older ones stay listed and download when opened.</p>
-        <div class="btn-row wrap">
-          <button class="btn" data-click="offline-now">Download now</button>
-          <button class="btn" data-click="export-mail">Save all mail to disk (.mbox)</button>
-        </div>
-        <div class="btn-row wrap">
-          <button class="btn" data-click="export-settings">Export settings…</button>
-          <button class="btn" data-click="import-settings">Import settings…</button>
-          <input type="file" name="import-file" accept=".json,application/json" hidden data-change="import-file" />
-        </div>
-        <p class="muted small">Exports contain accounts, rules, calendars and preferences, but never passwords or sign-in tokens.</p>
-        <div class="btn-row wrap">
-          <button class="btn" data-click="backup-open">Back up everything…</button>
-          <button class="btn" data-click="restore-open">Restore from a backup…</button>
-        </div>
-        <p class="muted small">A backup holds all your mail, contacts, calendars, settings and passwords, encrypted with a passphrase you choose. Restore it on any device or a new install to carry on where you left off.</p>
-      </section>
-      <section>
-        <h3>Storage</h3>
-        <p class="muted">Identical attachments are stored once.
-          ${usage[0] ? `Attachments: ${bytes(usage[1])} stored for ${bytes(usage[0])} of content (${Math.round((1 - usage[1] / usage[0]) * 100)}% saved).` : ""}</p>
-      </section>
-      <section>
-        <h3>Calendar</h3>
-        <label class="stack narrow-field"><span>Week starts on</span>
-          <select data-change="week-start">
-            ${[[0, "Sunday"], [1, "Monday"], [6, "Saturday"]].map(([v, l]) => html`<option value="${v}" ${weekStart() === v ? "selected" : ""}>${l}</option>`)}
-          </select></label>
-      </section>
-      <section>
-        <h3>Sign-in apps (OAuth)</h3>
-        <p class="muted small">Google and Microsoft sign-in need an app registration (see README → "Google and Microsoft sign-in"). Builds from CI include them; for your own builds, paste the IDs here.</p>
-        <label class="stack"><span>Google client ID</span><input name="g-id" value="${app.google.client_id}" /></label>
-        <label class="stack"><span>Google client secret (desktop apps get one; it isn't really secret)</span><input name="g-secret" value="${app.google.client_secret ?? ""}" /></label>
-        <label class="stack"><span>Microsoft application (client) ID</span><input name="m-id" value="${app.microsoft.client_id}" /></label>
-        <div><button class="btn primary" data-click="app-settings-save">Save</button></div>
-      </section>
-      <section>
-        <h3>Updates</h3>
-        <p class="muted small">Carteiro ${upd.current}. Updates come from Carteiro's GitHub releases, must carry the release signature and pass the virus scan before they're installed.</p>
-        <label class="check"><input type="checkbox" name="auto-update" ${app.auto_update ? "checked" : ""} ${upd.enabled ? "" : "disabled"} /> Download and install updates automatically</label>
-        <div class="update-status small">${updateStatus(upd)}</div>
-        <div class="btn-row wrap">
-          <button class="btn" data-click="update-check" ${upd.enabled ? "" : "disabled"}>Check now</button>
-          <button class="btn primary" data-click="update-install" ${upd.available ? "" : "hidden"}>${upd.ready ? "Restart to update" : "Get update"}</button>
-          <button class="btn" data-click="app-settings-save">Save</button>
-        </div>
-      </section>
-      <section>
-        <h3>About</h3>
-        <div class="about"></div>
-      </section>
-      <section>
-        <h3>Accounts</h3>
-        <div><button class="btn" data-click="accounts">Manage accounts…</button></div>
-      </section>
-    </div>`));
+  put("#modal", html`
+  <div class="modal-backdrop" data-click="modal-backdrop">
+    <div class="modal settings" role="dialog" aria-label="Settings">
+      <header><span>settings</span><button class="icon-btn" aria-label="Close" data-click="modal-close">${icon("close")}</button></header>
+      <nav class="pivot-titles" role="tablist">
+        ${PIVOTS.map(([k, l]) => html`<button role="tab" data-click="pivot" data-k="${k}">${l}</button>`)}
+      </nav>
+      <div class="pivots">
+        <section class="pivot form" data-k="general">
+          <h3>Accounts</h3>
+          <div><button class="btn" data-click="accounts">Manage accounts…</button></div>
+          <h3>Checking for new mail</h3>
+          <label class="check">During working hours, every
+            <select name="sync-minutes" data-change="app-autosave">${[5, 10, 15, 30, 60].map((m) => html`<option value="${m}" ${app.sync_minutes === m ? "selected" : ""}>${m} minutes</option>`)}</select></label>
+          <div class="workdays">${DAYS.map(([d, l]) => html`<label class="day"><input type="checkbox" name="work-day" value="${d}" ${app.work_days.includes(d) ? "checked" : ""} data-change="app-autosave" /><span>${l}</span></label>`)}</div>
+          <div class="row2"><label class="stack"><span>From</span><input type="time" name="work-start" value="${hhmm(app.work_start)}" data-change="app-autosave" /></label>
+            <label class="stack"><span>Until</span><input type="time" name="work-end" value="${hhmm(app.work_end)}" data-change="app-autosave" /></label></div>
+          <label class="check">Outside working hours
+            <select name="off-hours" data-change="app-autosave">${[[60, "every hour"], [180, "every 3 hours"], [0, "only when I ask"]].map(([m, l]) => html`<option value="${m}" ${app.off_hours_minutes === m ? "selected" : ""}>${l}</option>`)}</select></label>
+          <p class="muted small">The sync button checks right away at any time.</p>
+          <h3>Notifications</h3>
+          <label class="check"><input type="checkbox" name="notify" ${app.notify ? "checked" : ""} data-change="app-autosave" /> Notify me when new mail arrives</label>
+          <label class="check hide-narrow"><input type="checkbox" name="close-to-tray" ${app.close_to_tray ? "checked" : ""} data-change="app-autosave" /> Closing the window keeps Carteiro running in the system tray</label>
+          <h3>Calendar</h3>
+          <label class="stack narrow-field"><span>Week starts on</span>
+            <select data-change="week-start">
+              ${[[0, "Sunday"], [1, "Monday"], [6, "Saturday"]].map(([v, l]) => html`<option value="${v}" ${weekStart() === v ? "selected" : ""}>${l}</option>`)}
+            </select></label>
+        </section>
+
+        <section class="pivot form" data-k="security">
+          <h3>${icon("shield", 16)} Malware scanning (ClamAV)</h3>
+          <p class="muted">Every message and calendar is scanned before its formatted content or attachments are shown. Dangerous attachment types and deceptive links are always flagged.</p>
+          <label class="check"><input type="checkbox" name="scan-enabled" ${scanner.enabled ? "checked" : ""} /> Scan messages and calendars</label>
+          <label class="check"><input type="radio" name="scan-mode" value="builtin" ${scanner.builtin ? "checked" : ""} data-change="scan-mode" /> Built-in ClamAV engine</label>
+          <div class="engine-status small ${engine.state}" data-show="builtin" ${scanner.builtin ? "" : "hidden"}>${engineStatus(engine)}
+            <button class="btn" data-click="scanner-update">Update signatures now</button></div>
+          <label class="check"><input type="radio" name="scan-mode" value="external" ${scanner.builtin ? "" : "checked"} data-change="scan-mode" /> A clamd server I run myself</label>
+          <div data-show="external" ${scanner.builtin ? "hidden" : ""} class="stack">
+            <label class="stack narrow-field"><span>clamd address</span><input name="scan-addr" value="${scanner.builtin ? "" : scanner.clamd_addr}" placeholder="127.0.0.1:3310" /></label>
+            <div><button class="btn" data-click="scanner-test">Test connection</button></div>
+          </div>
+          <label class="check"><input type="checkbox" name="scan-block" ${scanner.block_when_unavailable ? "checked" : ""} /> Until a message has been scanned, hide its formatted content and attachments (recommended)</label>
+          <div class="btn-row"><button class="btn primary" data-click="scanner-save">Save</button></div>
+          <div class="scan-result small" hidden></div>
+          <h3>Privacy</h3>
+          <p class="muted small">Images from the web load only when you ask, never from trackers, and links lose their tracking parameters. Scripts in mail never run.</p>
+          <div class="tracker-status small">${trackerLine(trk)}</div>
+          <div><button class="btn" data-click="trackers-update">Update tracker list now</button></div>
+        </section>
+
+        <section class="pivot form" data-k="data">
+          <h3>Offline mail</h3>
+          <label class="stack narrow-field"><span>Keep mail available offline for</span>
+            <select name="offline-days" data-change="app-autosave">
+              ${[[1, "The last day"], [7, "The last week"], [30, "The last month"], [61, "The last 2 months"], [183, "The last 6 months"], [365, "The last year"], [0, "All mail"]].map(([d, l]) => html`<option value="${d}" ${app.offline_days === d ? "selected" : ""}>${l}</option>`)}
+            </select></label>
+          <p class="muted small">Messages in this period are downloaded in full so they open without a connection. Older ones stay listed and download when opened.</p>
+          <div class="btn-row wrap"><button class="btn" data-click="offline-now">Download now</button></div>
+          <h3>Backup</h3>
+          <p class="muted small">One file with all your mail, contacts, calendars, settings and passwords, encrypted with a passphrase you choose. Restore it on any device or a new install to carry on where you left off.</p>
+          <div class="btn-row wrap">
+            <button class="btn" data-click="backup-open">Back up everything…</button>
+            <button class="btn" data-click="restore-open">Restore from a backup…</button>
+          </div>
+          <h3>Export</h3>
+          <div class="btn-row wrap">
+            <button class="btn" data-click="export-mail">Save all mail to disk (.mbox)</button>
+            <button class="btn" data-click="export-settings">Export settings…</button>
+            <button class="btn" data-click="import-settings">Import settings…</button>
+            <input type="file" name="import-file" accept=".json,application/json" hidden data-change="import-file" />
+          </div>
+          <p class="muted small">Settings exports contain accounts, rules, calendars and preferences, but never passwords or sign-in tokens.</p>
+          <h3>Storage</h3>
+          <p class="muted small">Identical attachments are stored once.
+            ${usage[0] ? `Attachments: ${bytes(usage[1])} stored for ${bytes(usage[0])} of content (${Math.round((1 - usage[1] / usage[0]) * 100)}% saved).` : ""}</p>
+        </section>
+
+        <section class="pivot form" data-k="about">
+          <h3>Updates</h3>
+          <p class="muted small">Carteiro ${upd.current}. Updates come from Carteiro's GitHub releases, must carry the release signature and pass the virus scan before they're installed.</p>
+          <label class="check"><input type="checkbox" name="auto-update" ${app.auto_update ? "checked" : ""} ${upd.enabled ? "" : "disabled"} data-change="app-autosave" /> Download and install updates automatically</label>
+          <div class="update-status small">${updateStatus(upd)}</div>
+          <div class="btn-row wrap">
+            <button class="btn" data-click="update-check" ${upd.enabled ? "" : "disabled"}>Check now</button>
+            <button class="btn primary" data-click="update-install" ${upd.available ? "" : "hidden"}>${upd.ready ? "Restart to update" : "Get update"}</button>
+          </div>
+          <h3>About</h3>
+          <div class="about"></div>
+        </section>
+      </div>
+    </div>
+  </div>`);
+  showPivot(start, false);
   renderAbout(upd.current);
 }
+
+function showPivot(k, smooth = true) {
+  const pane = $(`#modal .pivot[data-k="${k}"]`);
+  pane?.parentElement.scrollTo({ left: pane.offsetLeft - pane.parentElement.offsetLeft, behavior: smooth ? "smooth" : "instant" });
+  markPivot(k);
+}
+// The current title leads the strip, the others follow dimmed (and wrap around).
+function markPivot(k) {
+  const nav = $("#modal .pivot-titles");
+  if (!nav) return;
+  const i = PIVOTS.findIndex(([x]) => x === k);
+  for (const b of nav.children) {
+    const j = PIVOTS.findIndex(([x]) => x === b.dataset.k);
+    b.classList.toggle("on", j === i);
+    b.setAttribute("aria-selected", j === i);
+    b.style.order = (j - i + PIVOTS.length) % PIVOTS.length;
+  }
+}
+on("click", "pivot", (el) => showPivot(el.dataset.k));
+document.addEventListener("scroll", (e) => {
+  const box = e.target;
+  if (!(box instanceof Element) || !box.matches?.("#modal .pivots")) return;
+  const i = Math.round(box.scrollLeft / box.clientWidth);
+  if (PIVOTS[i]) markPivot(PIVOTS[i][0]);
+}, true);
+document.addEventListener("keydown", (e) => {
+  if (!$("#modal .settings") || !["ArrowLeft", "ArrowRight"].includes(e.key) || e.target.closest("input, select, textarea")) return;
+  const cur = PIVOTS.findIndex(([k]) => k === $("#modal .pivot-titles .on")?.dataset.k);
+  const next = PIVOTS[(cur + (e.key === "ArrowRight" ? 1 : PIVOTS.length - 1)) % PIVOTS.length][0];
+  showPivot(next);
+});
 
 // Settings > About: version, licenses of every component (ui/licenses.json is
 // generated from the build by scripts/gen-licenses.py) and the source code.
@@ -590,20 +626,23 @@ on("click", "scanner-save", async (el) => {
   } catch (e) { toast(String(e)); }
 });
 
-on("click", "app-settings-save", async (el) => {
+// Settings save as soon as they change.
+const minutesOf = (t) => { const [h, m] = (t || "0:0").split(":").map(Number); return h * 60 + m; };
+on("change", "app-autosave", async () => {
   const v = (n) => $(`#modal [name=${n}]`);
   try {
     await api.setSettings({
       close_to_tray: v("close-to-tray").checked,
       notify: v("notify").checked,
-      sync_minutes: +v("sync-minutes").value || 3,
+      sync_minutes: +v("sync-minutes").value || 15,
+      work_days: [...document.querySelectorAll("#modal [name=work-day]:checked")].map((x) => +x.value),
+      work_start: minutesOf(v("work-start").value),
+      work_end: minutesOf(v("work-end").value),
+      off_hours_minutes: +v("off-hours").value,
+      schedule_version: 1,
       offline_days: +v("offline-days").value,
       auto_update: v("auto-update").checked,
-      google: { client_id: v("g-id").value.trim(), client_secret: v("g-secret").value.trim() || null },
-      microsoft: { client_id: v("m-id").value.trim(), client_secret: null },
     });
-    el.textContent = "Saved";
-    setTimeout(() => (el.textContent = "Save"), 2000);
   } catch (e) { toast(String(e)); }
 });
 on("click", "scanner-test", async (el) => {
@@ -677,7 +716,7 @@ on("click", "accounts", () => {
   openAccounts();
 });
 on("click", "cal-source-remove", async (el) => {
-  if (!confirm("Remove this calendar from Carteiro? Events on the server are not affected.")) return;
+  if (!(await ask("Remove this calendar from Carteiro? Events on the server are not affected.", "Remove"))) return;
   await api.removeCalSource(+el.dataset.id);
   openAccounts();
 });
@@ -754,7 +793,7 @@ on("click", "account-save", async (el) => {
 });
 on("click", "account-remove", async (el) => {
   const a = accountById(+el.dataset.id);
-  if (!a || !confirm(`Remove ${a.email} from this device? Mail on the server is not affected.`)) return;
+  if (!a || !(await ask(`Remove ${a.email} from this device? Mail on the server is not affected.`, "Remove"))) return;
   await api.removeAccount(a.id);
   if (S.account?.id === a.id) S.account = null;
   S.accounts = S.accounts.filter((x) => x.id !== a.id);
@@ -786,7 +825,7 @@ async function busy(el, label, work) {
 
 on("click", "offline-now", (el) => busy(el, "Downloading…", async () => {
   // Save the chosen period first so "Download now" uses it.
-  $("#modal [data-click=app-settings-save]")?.click();
+  // (the chosen period was already saved when it changed)
   const r = await api.downloadOfflineNow();
   toast(`Offline copy updated: ${r.downloaded} downloaded, ${r.freed} older ones freed`);
 }));

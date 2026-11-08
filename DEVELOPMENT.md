@@ -69,7 +69,7 @@ The end-to-end tests use made-up accounts on a local server, never real ones. Se
 
 ## Google and Microsoft sign-in
 
-Sign-in needs your own app registrations; client IDs of desktop apps aren't secret. Put the IDs in Settings → *Sign-in apps*, or bake them into CI builds with the repository secrets `CARTEIRO_GOOGLE_CLIENT_ID`, `CARTEIRO_GOOGLE_CLIENT_SECRET` and `CARTEIRO_MICROSOFT_CLIENT_ID`.
+Sign-in uses Carteiro's own app registrations, built into release packages from the repository secrets `CARTEIRO_GOOGLE_CLIENT_ID`, `CARTEIRO_GOOGLE_CLIENT_SECRET` and `CARTEIRO_MICROSOFT_CLIENT_ID` (client IDs of desktop apps aren't secret). Users never enter them. For a local build, set the same variables when building; a build without them doesn't offer Google or Microsoft sign-in.
 
 - **Google:** in Google Cloud Console, create a project and enable the Gmail API, the CalDAV API and the Google Contacts CardDAV API. Configure the OAuth consent screen with the scopes `https://mail.google.com/`, `https://www.googleapis.com/auth/calendar` and `https://www.googleapis.com/auth/carddav`, then create an OAuth client of type *Desktop app*. Until Google verifies the app, only test users you add can sign in, and their sign-ins expire after 7 days.
 - **Microsoft:** in Entra ID → App registrations, create an app for "Accounts in any organizational directory and personal Microsoft accounts". Add the platform *Mobile and desktop applications* with redirect URI `http://localhost`, and enable *Allow public client flows*. Add these delegated permissions:

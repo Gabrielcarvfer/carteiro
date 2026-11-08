@@ -2,7 +2,10 @@
 //! servers or senders is fed thousands of corrupted versions of valid input
 //! and must never panic. Deterministic, so failures reproduce.
 
-use mail_core::{b64, contacts, ical, imap, imap_proto, message, rules, safety, settings_io, xml};
+use mail_core::{
+    b64, backup, invites, recur, carddav, contacts, dedup, graph, http, ical, imap, imap_proto, message, presets, rules, safety, search, settings_io,
+    store, threading, tracking, tz, update, xml,
+};
 
 struct Rng(u64);
 
@@ -61,11 +64,18 @@ fn mutate(rng: &mut Rng, seed: &[u8]) -> Vec<u8> {
     v
 }
 
-/// FUZZ_SCALE=50 cargo test --release --test robustness  (longer runs)
+/// Longer runs, exploring new inputs each time (the seed is printed on failure):
+/// FUZZ_SCALE=50 FUZZ_SEED=$RANDOM cargo test --release --test robustness
+fn fuzz_seed() -> u64 {
+    std::env::var("FUZZ_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or(0)
+}
+
 fn fuzz(name: &str, seeds: &[&[u8]], iterations: usize, f: impl Fn(&[u8])) {
     let scale: usize = std::env::var("FUZZ_SCALE").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
     let iterations = iterations * scale;
-    let mut rng = Rng(0x9E37_79B9_7F4A_7C15 ^ name.len() as u64 ^ (scale as u64).rotate_left(17));
+    let extra = fuzz_seed();
+    eprintln!("fuzz {name}: FUZZ_SCALE={scale} FUZZ_SEED={extra}");
+    let mut rng = Rng(0x9E37_79B9_7F4A_7C15 ^ name.len() as u64 ^ (scale as u64).rotate_left(17) ^ extra.wrapping_mul(0xA24B_AED4_963E_E407));
     for s in seeds {
         f(s);
     }
@@ -212,7 +222,7 @@ fn protocol_clients_survive_hostile_servers() {
     use mail_core::smtp::SmtpClient;
 
     let scale: usize = std::env::var("FUZZ_SCALE").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
-    let mut rng = Rng(42);
+    let mut rng = Rng(42 ^ fuzz_seed().wrapping_mul(0xA24B_AED4_963E_E407));
     let imap_seed: &[u8] = b"* OK [CAPABILITY IMAP4rev1 AUTH=PLAIN SASL-IR] hi\r\nA0001 OK\r\n* CAPABILITY IMAP4rev1 MOVE\r\nA0002 OK\r\n* 1 FETCH (UID 5 FLAGS (\\Seen) RFC822.SIZE 9 BODY[] {5}\r\nhello)\r\nA0003 OK\r\n";
     let smtp_seed: &[u8] = b"220 hi\r\n250-mx\r\n250-AUTH PLAIN LOGIN\r\n250 8BITMIME\r\n235 ok\r\n250 ok\r\n250 ok\r\n354 go\r\n250 queued\r\n";
     let pop_seed: &[u8] = b"+OK hi\r\n+OK\r\n+OK\r\n+OK\r\n1 abc\r\n2 def\r\n.\r\n+OK\r\nSubject: x\r\n\r\n..dot\r\n.\r\n";
@@ -245,4 +255,126 @@ fn protocol_clients_survive_hostile_servers() {
             let _ = send_on(c, &url, &Request::new("REPORT", "https://example.com/x")).await;
         });
     }
+}
+
+/// Stored mail: whatever arrives is saved, threaded, searchable, and comes
+/// back byte for byte (attachments are stored apart and spliced back in).
+#[test]
+fn store_keeps_hostile_mail_intact() {
+    let st = store::Store::open_in_memory().unwrap();
+    let ep = mail_core::Endpoint { host: "h".into(), port: 993, security: mail_core::Security::Tls, allow_insecure: false };
+    let mut a = mail_core::Account {
+        id: 0, name: "Me".into(), email: "me@x.org".into(), username: "me".into(),
+        incoming_protocol: mail_core::Protocol::Imap, incoming: ep.clone(), smtp: ep, smtp_username: None,
+        signature: String::new(), auth: mail_core::AuthMethod::Password,
+    };
+    st.add_account(&mut a).unwrap();
+    let big = [MAIL, b"\r\n", &[b'A'; 6000][..]].concat();
+    let big_att = String::from_utf8_lossy(MAIL).replace("QUJD", &"QUJD".repeat(2000)).into_bytes();
+    let uid = std::cell::Cell::new(0u32);
+    fuzz("store", &[MAIL, &big, &big_att], 1_500, |raw| {
+        uid.set(uid.get() + 1);
+        let meta = message::parse_meta(raw);
+        let id = st
+            .insert_message(&store::NewMessage {
+                account_id: a.id, folder: "INBOX".into(), uid: Some(uid.get()), pop_uidl: None, meta,
+                seen: false, flagged: false, size: raw.len() as u64, raw: Some(raw.to_vec()),
+            })
+            .unwrap();
+        assert_eq!(st.raw(id).unwrap().as_deref(), Some(raw), "message {id} changed in storage");
+        let _ = st.message(id).unwrap();
+        let (stripped, parts) = dedup::split_attachments(raw);
+        assert!(stripped.len() + parts.iter().map(|p| p.end - p.start).sum::<usize>() == raw.len());
+    });
+    // Search terms from the search box are data, never SQL.
+    fuzz("store-search", &[b"from:ana subject:\"q3 plan\" has:attachment is:unread", b"after:2026-11-01 before:2026-12-01 to:me", b"%_'\";--"], 3_000, |q| {
+        let q = String::from_utf8_lossy(q);
+        st.list_threads(a.id, "INBOX", Some(&q), 50, 0).unwrap();
+        st.search_events(&q, 20).unwrap();
+        st.list_contacts(&q, 20).unwrap();
+        st.suggest_addresses(&q, 8).unwrap();
+        let _ = search::parse(&q);
+    });
+}
+
+#[test]
+fn newer_parsers() {
+    fuzz("trackers", &[b"||trk.example.com^\n! comment\nclick.shop.example\n@@||ok.example^$third-party\n"], 10_000, |b| {
+        let t = String::from_utf8_lossy(b);
+        let _ = tracking::parse_host_list(&t);
+        let _ = tracking::is_tracker_host(&t);
+        let _ = tracking::remote_images(&t);
+    });
+    fuzz("images", &[b"<img src=\"https://x.org/a.png\" srcset=\"a 1x, //b 2x\" width=1 height=1><img src='http://trk.example/p.gif'>"], 10_000, |b| {
+        let h = String::from_utf8_lossy(b);
+        let _ = tracking::remote_images(&h);
+        let _ = safety::neutralize_html(&h);
+        let _ = safety::link_warnings(&h);
+    });
+    let base = http::Url::parse("https://dav.example/addressbooks/me/").unwrap();
+    let report: &[u8] = b"<?xml version=\"1.0\"?><d:multistatus xmlns:d=\"DAV:\" xmlns:c=\"urn:ietf:params:xml:ns:carddav\"><d:response><d:href>/ab/1.vcf</d:href><d:propstat><d:prop><d:getetag>\"1\"</d:getetag><c:address-data>BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Ana\r\nEMAIL:ana@x.org\r\nEND:VCARD\r\n</c:address-data></d:prop></d:propstat></d:response></d:multistatus>";
+    fuzz("carddav", &[report], 5_000, |b| {
+        if let Ok(doc) = xml::parse(&String::from_utf8_lossy(b)) {
+            let _ = carddav::parse_report(&doc, &base);
+        }
+    });
+    let ev: &[u8] = br#"{"id":"1","subject":"Hi","isAllDay":false,"start":{"dateTime":"2026-11-08T10:00:00.0000000","timeZone":"W. Europe Standard Time"},"end":{"dateTime":"2026-11-08T11:00:00","timeZone":"UTC"},"location":{"displayName":"Room"},"bodyPreview":"x","recurrence":null,"type":"singleInstance"}"#;
+    let ct: &[u8] = br#"{"id":"c1","displayName":"Ana","emailAddresses":[{"address":"ana@x.org","name":"Ana"}],"mobilePhone":"+1","businessPhones":["2"],"companyName":"Acme","personalNotes":"n"}"#;
+    fuzz("graph", &[ev, ct], 10_000, |b| {
+        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(b) {
+            let _ = graph::parse_event(&v);
+            let _ = graph::parse_contact(&v);
+        }
+    });
+    fuzz("update", &[br#"{"version":"0.2.0","notes":"x","platforms":{"linux-x86_64":{"url":"https://github.com/a/b/releases/download/v0.2.0/C.AppImage","sha256":"00"}}}"#], 5_000, |b| {
+        let _ = update::verify_manifest(b, "AAAA", &[0u8; 32]);
+        let t = String::from_utf8_lossy(b);
+        let _ = update::parse_version(&t);
+        let _ = update::is_newer(&t, "0.1.0");
+    });
+    fuzz("names", &[b"W. Europe Standard Time", b"Re: Fwd: AW: [list] Subject", b"someone@outlook.com"], 10_000, |b| {
+        let t = String::from_utf8_lossy(b);
+        let _ = tz::to_iana(&t);
+        let _ = threading::normalize_subject(&t);
+        let _ = threading::is_reply_subject(&t);
+        let _ = presets::guess(&t);
+        let _ = safety::attachment_risk(&t);
+    });
+}
+
+/// A backup file is opened before anything is trusted: a damaged or hostile
+/// one must fail cleanly, never panic or restore garbage.
+#[test]
+fn backup_files() {
+    let mut sealed = Vec::new();
+    backup::encrypt_with(&mut &MAIL[..], &mut sealed, "fuzz passphrase", 1).unwrap();
+    fuzz("backup", &[&sealed], 3_000, |b| {
+        let mut out = Vec::new();
+        if backup::decrypt(&mut &b[..], &mut out, "fuzz passphrase").is_ok() {
+            assert_eq!(out, MAIL, "a changed backup decrypted to different data");
+        }
+    });
+}
+
+/// Invitations come from strangers: whatever they send must not crash the
+/// calendar or blow up into endless events.
+#[test]
+fn invitations_and_repeat_rules() {
+    let ics: &[u8] = b"BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nUID:u1\r\nSEQUENCE:1\r\nSUMMARY:Sync\r\nDTSTART;TZID=Europe/Lisbon:20261109T100000\r\nDTEND;TZID=Europe/Lisbon:20261109T103000\r\nRRULE:FREQ=MONTHLY;BYDAY=-1FR,2TU;INTERVAL=2;COUNT=40\r\nEXDATE:20261208T100000\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:u1\r\nRECURRENCE-ID:20261110T100000\r\nDTSTART:20261110T150000Z\r\nSTATUS:CANCELLED\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+    fuzz("recur", &[ics, b"RRULE:FREQ=YEARLY;BYMONTH=2;BYMONTHDAY=29,-1;UNTIL=20400101T000000Z"], 4_000, |b| {
+        let t = String::from_utf8_lossy(b);
+        let _ = mail_core::ical::calendar_method(&t);
+        let evs = mail_core::ical::parse_events(&t);
+        let out = recur::expand_all(evs, 1_700_000_000, 1_900_000_000, 500);
+        assert!(out.len() <= 500 * 4, "expansion is bounded");
+        let mut e = mail_core::ical::Event { start: 1_794_225_600, end: 1_794_229_200, ..Default::default() };
+        e.rrule = t.lines().find_map(|l| l.strip_prefix("RRULE:")).unwrap_or(&t).to_string();
+        assert!(recur::expand(&e, 0, i64::MAX / 4, 300).len() <= 300);
+    });
+    let mail = [b"From: a@b.org\r\nContent-Type: text/calendar; method=REQUEST\r\n\r\n".as_slice(), ics].concat();
+    fuzz("invite-mail", &[&mail], 1_500, |raw| {
+        for part in invites::calendar_parts(raw) {
+            let _ = mail_core::ical::parse_events(&part);
+        }
+    });
 }

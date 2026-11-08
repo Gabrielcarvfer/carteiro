@@ -1,9 +1,10 @@
-// Contacts: your own (created or imported here) and synced address books
+// Contacts: your own (created or imported here), people you mail with
+// (collected automatically), the phone's (Android), and synced address books
 // (Google, Microsoft, CardDAV). A list beside the details on desktop; list,
 // then details, on phones.
 
 import { api } from "./api.js";
-import { $, html, on, put } from "./dom.js";
+import { $, ask, html, on, put } from "./dom.js";
 import { avatar, icon } from "./format.js";
 import { syncLayer, toast } from "./app.js";
 import { openCompose } from "./dialogs.js";
@@ -26,9 +27,40 @@ async function load() {
 }
 
 async function sync() {
+  await syncPhoneContacts();
   const errors = await api.syncContacts().catch((e) => [String(e)]);
   if (errors?.length) toast(errors[0]);
   await load();
+}
+
+// ---- the phone's contacts (Android) ---------------------------------------------
+
+const PHONE = window.CarteiroAndroid;
+const PHONE_KEY = "carteiro.phoneContacts";
+const phoneWanted = () => { try { return localStorage.getItem(PHONE_KEY) === "1"; } catch { return false; } };
+
+/** Mirrors the phone's address book when the user asked for it. */
+export async function syncPhoneContacts() {
+  if (!PHONE?.readContacts || !phoneWanted() || !PHONE.contactsAllowed()) return;
+  try {
+    const list = JSON.parse(PHONE.readContacts());
+    await api.syncPhoneContacts(list.map(([id, c]) => [id, { uid: id, notes: "", ...c }]));
+  } catch (e) { toast(`Phone contacts: ${e}`); }
+}
+
+async function startPhoneContacts() {
+  try { localStorage.setItem(PHONE_KEY, "1"); } catch {}
+  if (!PHONE.contactsAllowed()) {
+    // Android shows its own question; the answer comes back here.
+    const granted = await new Promise((resolve) => { window.carteiroContactsPermission = resolve; PHONE.askContacts(); });
+    if (!granted) {
+      try { localStorage.removeItem(PHONE_KEY); } catch {}
+      return toast("Carteiro wasn't allowed to read the phone's contacts");
+    }
+  }
+  await syncPhoneContacts();
+  await load();
+  books();
 }
 
 const sourceName = (c) => K.sources.find((s) => s.id === c.source_id)?.name ?? "";
@@ -101,7 +133,8 @@ function detail(c) {
     <header class="toolbar">
       <button class="icon-btn show-narrow" aria-label="Back" data-click="ct-back">${icon("back", 22)}</button>
       <span class="spacer"></span>
-      ${c.read_only ? "" : html`<button class="btn" data-click="ct-edit">Edit</button><button class="btn danger" data-click="ct-delete">Delete</button>`}
+      ${c.read_only ? "" : html`<button class="btn" data-click="ct-edit">Edit</button>`}
+      <button class="btn danger" data-click="ct-delete">Delete</button>
     </header>
     <div class="ct-card">
       ${avatar(c.name, 64)}
@@ -110,9 +143,16 @@ function detail(c) {
       ${c.emails.map((e) => html`<p><button class="linkish" data-click="ct-mail" data-to="${e}">${icon("compose", 14)} ${e}</button></p>`)}
       ${c.phones.map((p) => html`<p>${p}</p>`)}
       ${c.notes ? html`<pre class="text">${c.notes}</pre>` : ""}
-      <p class="muted small">${c.read_only ? `From ${sourceName(c)} (synced: change it there)` : "On this device"}</p>
+      <p class="muted small">${origin(c)}</p>
     </div>
   </div>`;
+}
+
+function origin(c) {
+  const src = K.sources.find((s) => s.id === c.source_id);
+  if (src?.kind === "collected") return "Added from your mail";
+  if (src?.kind === "android") return "From the phone's contacts (change it there)";
+  return c.read_only ? `From ${sourceName(c)} (synced: change it there)` : "On this device";
 }
 
 function editor(c) {
@@ -141,8 +181,11 @@ function books() {
         <header>Address books<button class="icon-btn" aria-label="Close" data-click="modal-close">${icon("close")}</button></header>
         <div class="content form">
           ${K.sources.map((s) => html`<div class="rule"><div class="rule-main"><div class="rule-name">${s.name}</div>
-            <div class="muted small">${{ local: "On this device", carddav: "CardDAV", google: "Google", microsoft: "Microsoft 365 / Outlook" }[s.kind] ?? s.kind}${s.url ? ` · ${s.url}` : ""}</div></div>
-            ${s.kind === "carddav" ? html`<button class="btn danger" data-click="ct-book-remove" data-id="${s.id}">Remove</button>` : ""}</div>`)}
+            <div class="muted small">${{ local: "On this device", collected: "People you mail with, added automatically", android: "The phone's contacts", carddav: "CardDAV", google: "Google", microsoft: "Microsoft 365 / Outlook" }[s.kind] ?? s.kind}${s.url ? ` · ${s.url}` : ""}</div></div>
+            ${s.kind === "carddav" || s.kind === "android" ? html`<button class="btn danger" data-click="ct-book-remove" data-id="${s.id}">${s.kind === "android" ? "Stop" : "Remove"}</button>` : ""}</div>`)}
+          ${PHONE?.readContacts && !K.sources.some((s) => s.kind === "android") ? html`<div class="rule"><div class="rule-main"><div class="rule-name">Phone contacts</div>
+            <div class="muted small">Bring in the contacts saved on this phone, and keep them up to date.</div></div>
+            <button class="btn primary" data-click="ct-phone">Bring in</button></div>` : ""}
           <p class="muted small">Google and Microsoft accounts bring their contacts automatically. Add any other CardDAV address book (Fastmail, iCloud, Nextcloud, mailbox.org…):</p>
           <label class="stack"><span>Server address</span><input name="url" placeholder="https://carddav.example.com/" autocapitalize="off" /></label>
           <label class="stack"><span>User name</span><input name="username" autocapitalize="off" /></label>
@@ -191,7 +234,9 @@ on("click", "ct-save", async (el) => {
 });
 on("click", "ct-delete", async () => {
   const c = K.list.find((x) => x.id === K.selected);
-  if (!c || !confirm(`Delete ${c.name}?`)) return;
+  if (!c) return;
+  const note = c.read_only ? ` It stays in ${sourceName(c)}, but won't come back here.` : "";
+  if (!(await ask(`Delete ${c.name}?${note}`))) return;
   try { await api.deleteContact(c.id); K.selected = null; await load(); } catch (e) { toast(String(e)); }
 });
 on("click", "ct-import", () => $("#contacts [name=ct-file]").click());
@@ -222,7 +267,11 @@ on("click", "ct-book-add", async (el) => {
     el.textContent = "Add address book";
   }
 });
+on("click", "ct-phone", () => startPhoneContacts());
 on("click", "ct-book-remove", async (el) => {
+  if (K.sources.find((s) => s.id === +el.dataset.id)?.kind === "android") {
+    try { localStorage.removeItem(PHONE_KEY); } catch {}
+  }
   await api.removeContactSource(+el.dataset.id).catch((e) => toast(String(e)));
   K.sources = await api.contactSources();
   books();

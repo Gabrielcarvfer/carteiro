@@ -1,6 +1,11 @@
 package dev.carteiro.mail
 
+import android.Manifest
 import android.content.ActivityNotFoundException
+import android.content.pm.PackageManager
+import android.provider.ContactsContract
+import org.json.JSONArray
+import org.json.JSONObject
 import android.media.MediaScannerConnection
 import android.content.Intent
 import android.net.Uri
@@ -19,6 +24,9 @@ class MainActivity : TauriActivity() {
   // entries that weren't created by a user gesture, so Back would leave the app
   // with a conversation or dialog still open.
   override val handleBackNavigation: Boolean = false
+
+  private var web: WebView? = null
+  private val contactsRequest = 7101
 
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
@@ -40,6 +48,7 @@ class MainActivity : TauriActivity() {
   // Back asks the page to close its top layer (conversation, reply, dialog,
   // drawer); only when nothing is open does Android leave the app as usual.
   override fun onWebViewCreate(webView: WebView) {
+    web = webView
     webView.addJavascriptInterface(Links(), "CarteiroAndroid")
     val callback = object : OnBackPressedCallback(true) {
       override fun handleOnBackPressed() {
@@ -53,6 +62,15 @@ class MainActivity : TauriActivity() {
       }
     }
     onBackPressedDispatcher.addCallback(this, callback)
+  }
+
+  @Deprecated("TauriActivity doesn't offer the activity result API")
+  override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+    super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+    if (requestCode == contactsRequest) {
+      val granted = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
+      web?.post { web?.evaluateJavascript("window.carteiroContactsPermission && window.carteiroContactsPermission($granted)", null) }
+    }
   }
 
   // Opens web and mail links in the user's browser / mail app. Same rule as
@@ -70,6 +88,54 @@ class MainActivity : TauriActivity() {
       val paths = if (file.isDirectory) file.walk().filter { it.isFile }.map { it.path }.toList().toTypedArray() else arrayOf(file.path)
       MediaScannerConnection.scanFile(this@MainActivity, paths, null, null)
       return true
+    }
+
+    // The phone's contacts, only with the user's permission (asked when they
+    // choose to bring them in). Read-only: Carteiro never changes them.
+    @JavascriptInterface
+    fun contactsAllowed(): Boolean =
+      checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED
+
+    @JavascriptInterface
+    fun askContacts() {
+      runOnUiThread { requestPermissions(arrayOf(Manifest.permission.READ_CONTACTS), contactsRequest) }
+    }
+
+    /** [[lookup key, {name, emails, phones, organization}], ...] as JSON. */
+    @JavascriptInterface
+    fun readContacts(): String {
+      if (!contactsAllowed()) return "[]"
+      val people = LinkedHashMap<String, JSONObject>()
+      val kinds = arrayOf(
+        ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE,
+        ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE,
+        ContactsContract.CommonDataKinds.Organization.CONTENT_ITEM_TYPE,
+        ContactsContract.CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE
+      )
+      val cols = arrayOf(
+        ContactsContract.Data.LOOKUP_KEY, ContactsContract.Data.DISPLAY_NAME, ContactsContract.Data.MIMETYPE,
+        ContactsContract.Data.DATA1
+      )
+      contentResolver.query(
+        ContactsContract.Data.CONTENT_URI, cols, "${ContactsContract.Data.MIMETYPE} IN (?, ?, ?, ?)", kinds, null
+      )?.use { c ->
+        while (c.moveToNext()) {
+          val key = c.getString(0) ?: continue
+          val p = people.getOrPut(key) {
+            JSONObject().put("name", c.getString(1) ?: "").put("emails", JSONArray()).put("phones", JSONArray()).put("organization", "")
+          }
+          val value = c.getString(3)?.trim().orEmpty()
+          if (value.isEmpty()) continue
+          when (c.getString(2)) {
+            kinds[0] -> p.getJSONArray("emails").put(value)
+            kinds[1] -> p.getJSONArray("phones").put(value)
+            kinds[2] -> p.put("organization", value)
+          }
+        }
+      }
+      val out = JSONArray()
+      for ((key, p) in people) out.put(JSONArray().put(key).put(p))
+      return out.toString()
     }
 
     @JavascriptInterface

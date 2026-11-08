@@ -62,7 +62,7 @@ pub fn parse_event(v: &Value) -> Option<GraphEvent> {
             recurring: matches!(v.get("type").and_then(Value::as_str), Some("occurrence" | "exception" | "seriesMaster")),
             // Times are exact (UTC); the event's own zone is kept to show it.
             tzid: crate::tz::to_iana(&s(v, "originalStartTimeZone")),
-            tz_offset: None,
+            ..Default::default()
         },
     })
 }

@@ -5,8 +5,8 @@ import { api, listen } from "./api.js";
 import { $, html, on, put, raw } from "./dom.js";
 import { addrList, avatar, bytes, folderLabel, icon, longDate, shortDate } from "./format.js";
 import { openCompose, openRules, openSettings, openSetup, ruleFromMessage } from "./dialogs.js";
-import { showCalendar } from "./calendar.js";
-import { leaveContacts, showContacts } from "./contacts.js";
+import { eventWhen, rsvpButtons, showCalendar } from "./calendar.js";
+import { leaveContacts, showContacts, syncPhoneContacts } from "./contacts.js";
 
 export const S = {
   accounts: [], account: null, folders: [], folder: "INBOX", threads: [], selected: null, filter: "",
@@ -572,6 +572,7 @@ function renderMessage(m) {
         ${m.verdict.status === "infected" ? html`<div class="banner danger">${icon("shield", 16)} Malware detected (${m.verdict.signature}). Formatted content and attachments are blocked.</div>` : ""}
         ${m.verdict.status === "not_scanned" && m.attachments_blocked && m.verdict.reason !== "scanning disabled" ? html`<div class="banner info">${icon("shield", 16)} Not scanned yet (${m.verdict.reason}). Showing plain text only; formatted content and attachments appear once the scan can run.</div>` : ""}
         ${showHtml && m.remote_images.length && !S.images[m.id] ? imagesBanner(m) : ""}
+        ${(m.invites ?? []).map(inviteCard)}
         ${(m.warnings ?? []).length ? html`<div class="banner warn">${icon("junk", 16)}<div><strong>Be careful with this message</strong><ul>${m.warnings.map((w) => html`<li>${w}</li>`)}</ul></div></div>` : ""}
         <div class="msg-body">
           ${showHtml
@@ -590,6 +591,20 @@ function renderMessage(m) {
       ` : ""}
     </article>`;
 }
+
+// An invitation from a clean message, already in the Invitations calendar.
+function inviteCard(e) {
+  return html`<div class="invite">
+    <div class="invite-head">${icon("calendar", 18)}<div>
+      <strong>${e.title || "(no title)"}</strong>
+      <div class="muted small">${eventWhen(e)}${e.recurring ? " · repeats" : ""}${e.location ? ` · ${e.location}` : ""}</div>
+    </div></div>
+    <div class="invite-foot">${rsvpButtons(e)}<span class="muted small">In your Invitations calendar. Your answer is only noted here; nobody is told.</span></div>
+  </div>`;
+}
+document.addEventListener("rsvp-changed", ({ detail }) => {
+  for (const m of S.messages) for (const e of m.invites ?? []) if (e.id === detail.id) e.rsvp = detail.rsvp;
+});
 
 function renderReader() {
   const ms = S.messages;
@@ -783,7 +798,7 @@ threadsEl.addEventListener("touchend", () => {
 });
 
 // Background sync (tray mode) finished: refresh what's on screen.
-listen("mail-synced", () => { refreshFolders(); refreshThreads(); });
+listen("mail-synced", () => { refreshFolders(); refreshThreads(); syncPhoneContacts(); });
 // Android: the shell asks the page to open the browser (sign-in).
 listen("open-url", (url) => guard(api.openLink(url)));
 // Messages opened while the virus scanner was still starting showed plain
@@ -792,4 +807,14 @@ listen("scanner-ready", () => {
   if (S.selected && S.messages.some((m) => m.verdict.status === "not_scanned")) openThread(S.selected);
 });
 
+// Google / Microsoft sign-in needs the app registration a build was made
+// with; without one, those buttons aren't offered at all.
+api.getSettings().then((cfg) => {
+  document.body.classList.toggle("no-google", !cfg.google?.client_id);
+  document.body.classList.toggle("no-microsoft", !cfg.microsoft?.client_id);
+}).catch(() => {});
 loadAccounts();
+// Working hours are local time; the engine has no time zone database.
+api.setUtcOffset().catch(() => {});
+setInterval(() => api.setUtcOffset().catch(() => {}), 30 * 60 * 1000);
+syncPhoneContacts();

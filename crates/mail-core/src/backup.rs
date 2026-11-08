@@ -55,6 +55,12 @@ fn read_full(r: &mut impl Read, buf: &mut [u8]) -> Result<usize> {
 }
 
 pub fn encrypt(src: &mut impl Read, dst: &mut impl Write, passphrase: &str) -> Result<()> {
+    encrypt_with(src, dst, passphrase, ITERATIONS)
+}
+
+/// `encrypt` with a chosen work factor; only tests want a cheaper one.
+#[doc(hidden)]
+pub fn encrypt_with(src: &mut impl Read, dst: &mut impl Write, passphrase: &str, iterations: u32) -> Result<()> {
     if passphrase.chars().count() < MIN_PASSPHRASE {
         return Err(Error::Other(format!("Use a passphrase of at least {MIN_PASSPHRASE} characters")));
     }
@@ -62,9 +68,9 @@ pub fn encrypt(src: &mut impl Read, dst: &mut impl Write, passphrase: &str) -> R
     let mut header = [0u8; HEADER_LEN];
     header[..16].copy_from_slice(MAGIC);
     rng.fill(&mut header[16..32]).map_err(|_| Error::Other("no randomness".into()))?;
-    header[32..36].copy_from_slice(&ITERATIONS.to_be_bytes());
+    header[32..36].copy_from_slice(&iterations.to_be_bytes());
     rng.fill(&mut header[36..]).map_err(|_| Error::Other("no randomness".into()))?;
-    let key = key(passphrase, &header[16..32], ITERATIONS)?;
+    let key = key(passphrase, &header[16..32], iterations)?;
     dst.write_all(&header)?;
 
     // Read one chunk ahead so the last one is known when it's sealed.
