@@ -141,7 +141,10 @@ Sign-in opens the system browser and returns through a one-time loopback address
 
 ## CI and releases
 
-- `ci.yml`: engine tests and clippy on Linux and Windows, a dependency audit (`cargo-deny`), and a compile check of the Windows app with ClamAV bundled.
+- `ci.yml`, on every push to `master` and every pull request:
+  - engine tests and clippy on Linux and Windows;
+  - a dependency audit (`cargo-deny`, built from a pinned crates.io release, auditing the shipped platforms);
+  - the Windows MSI, the Linux AppImage and the Android APK, built as for a release. Each package is checked: unpacked, every bundled program finds its libraries, and the bundled `clamd` starts. They're kept 7 days as test artifacts, signed with throwaway keys.
 - `release.yml` builds a **Windows MSI**, a **Linux AppImage** and an **Android APK**, each with ClamAV. It runs on a `v*` tag, or manually without publishing.
   1. All three packages are uploaded to **VirusTotal**. Any engine flagging one as malicious or suspicious stops the release; links to the reports are in the run summary.
   2. On a tag, after the scan passes, the release is published with `SHA256SUMS` and a signed update manifest (`latest.json` + `latest.json.sig`).

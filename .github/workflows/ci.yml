@@ -48,8 +48,8 @@ jobs:
         if: runner.os == 'Linux'
         run: python3 -I scripts/gen-licenses.py && git diff --exit-code ui/licenses.json
 
-  app-windows:
-    name: Windows app compiles
+  windows-msi:
+    name: Windows MSI builds
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -62,7 +62,33 @@ jobs:
       - name: Bundle ClamAV (pinned, checksum-verified)
         shell: bash
         run: scripts/fetch-clamav.sh windows-x64
-      - run: cargo check -p carteiro --locked
+      # WiX 3.14.1 is fetched by the pinned tauri-cli and checked by SHA-256.
+      - run: cargo tauri build --bundles msi
+      # Unpack the MSI without installing it, then check the app and the
+      # bundled ClamAV are there and that clamd starts (a missing DLL makes
+      # Windows refuse to start it).
+      - name: Check the MSI
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $msi = (Get-ChildItem target/release/bundle/msi/*.msi | Select-Object -First 1).FullName
+          $dir = Join-Path $env:RUNNER_TEMP "msi-unpacked"
+          $p = Start-Process msiexec.exe -ArgumentList "/a", "`"$msi`"", "/qn", "TARGETDIR=`"$dir`"" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "msiexec /a failed with $($p.ExitCode)" }
+          $app = Get-ChildItem $dir -Recurse -Filter carteiro.exe | Select-Object -First 1
+          $clamd = Get-ChildItem $dir -Recurse -Filter clamd.exe | Select-Object -First 1
+          $fresh = Get-ChildItem $dir -Recurse -Filter freshclam.exe | Select-Object -First 1
+          if (-not $app -or -not $clamd -or -not $fresh) { throw "missing from the MSI: carteiro.exe, clamd.exe or freshclam.exe" }
+          $out = & $clamd.FullName --version 2>&1 | Out-String
+          Write-Output $out
+          if ($out -notmatch "ClamAV|clamd.conf|config") { throw "the bundled clamd didn't start (exit $LASTEXITCODE)" }
+          $global:LASTEXITCODE = 0
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: carteiro-windows-msi-ci-test
+          path: target/release/bundle/msi/*.msi
+          if-no-files-found: error
+          retention-days: 7
 
   android:
     name: Android APK builds
