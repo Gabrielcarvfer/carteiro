@@ -15,6 +15,10 @@ ignore = [
     # Compile-time only: a proc-macro behind gtk-rs 0.18, used by Tauri's
     # Linux tray icon; nothing newer is available through Tauri yet.
     { id = "RUSTSEC-2024-0370", reason = "proc-macro-error: build-time only, via Tauri's GTK stack; no upgrade available" },
+    # glib 0.18 comes with Tauri's GTK 3 stack (Linux only); 0.20 needs gtk-rs
+    # 0.20, which Tauri doesn't support yet. The unsound VariantStrIter is
+    # called by no crate in our tree (checked with grep over every dependency).
+    { id = "RUSTSEC-2024-0429", reason = "glib VariantStrIter: unused by any dependency; no upgrade through Tauri" },
     # Not built for any shipped target: zbus comes with notify-rust on
     # BSD-style Unix only, and Carteiro uses that plugin on Windows and
     # Android alone. cargo-deny merges the targets' graphs and reports it.
