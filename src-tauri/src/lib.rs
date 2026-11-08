@@ -852,9 +852,24 @@ async fn download_offline_now(state: State<'_, AppState>) -> Res<ops::OfflineRep
 }
 
 /// Where exported files go: Downloads, else Documents, else app data.
+/// Where saved attachments and exports go: Downloads/Carteiro.
 fn export_dir(app: &AppHandle) -> Res<std::path::PathBuf> {
+    // Android 11+ lets apps create their own files in the shared Download
+    // folder without a permission; older versions fall back to the app's folder.
+    #[cfg(target_os = "android")]
+    {
+        let public = std::path::PathBuf::from("/storage/emulated/0/Download/Carteiro");
+        let probe = public.join(".carteiro-write-test");
+        if std::fs::create_dir_all(&public).is_ok() && std::fs::write(&probe, b"").is_ok() {
+            let _ = std::fs::remove_file(&probe);
+            return Ok(public);
+        }
+    }
     let p = app.path();
-    p.download_dir().or_else(|_| p.document_dir()).or_else(|_| p.app_data_dir()).map_err(err)
+    let base = p.download_dir().or_else(|_| p.document_dir()).or_else(|_| p.app_data_dir()).map_err(err)?;
+    let dir = base.join("Carteiro");
+    std::fs::create_dir_all(&dir).map_err(err)?;
+    Ok(dir)
 }
 
 fn stamp() -> String {

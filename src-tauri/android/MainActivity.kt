@@ -1,6 +1,7 @@
 package dev.carteiro.mail
 
 import android.content.ActivityNotFoundException
+import android.media.MediaScannerConnection
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
@@ -59,6 +60,18 @@ class MainActivity : TauriActivity() {
   // text-direction characters. Mail bodies render in a frame with scripts
   // disabled, so only Carteiro's own page can call this.
   inner class Links {
+    // Saved files appear in Files / Downloads only once Android's media
+    // index knows them. Only Carteiro's own Download/Carteiro folder.
+    @JavascriptInterface
+    fun indexFile(path: String): Boolean {
+      val file = java.io.File(path).canonicalFile
+      val dir = java.io.File("/storage/emulated/0/Download/Carteiro").canonicalFile
+      if (!file.path.startsWith(dir.path + "/")) return false
+      val paths = if (file.isDirectory) file.walk().filter { it.isFile }.map { it.path }.toList().toTypedArray() else arrayOf(file.path)
+      MediaScannerConnection.scanFile(this@MainActivity, paths, null, null)
+      return true
+    }
+
     @JavascriptInterface
     fun open(url: String): Boolean {
       val lower = url.lowercase()

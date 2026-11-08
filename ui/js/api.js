@@ -24,6 +24,10 @@ export function withoutTracking(link) {
   }
 }
 
+function indexOnAndroid(path) {
+  try { if (path && window.CarteiroAndroid) window.CarteiroAndroid.indexFile(path); } catch {}
+}
+
 export const api = {
   listAccounts: () => call("list_accounts"),
   guessSettings: (email) => call("guess_settings", { email }),
@@ -50,9 +54,11 @@ export const api = {
   getScanner: () => call("get_scanner"),
   scannerStatus: () => call("scanner_status"),
   downloadOfflineNow: () => call("download_offline_now"),
-  exportMail: () => call("export_mail"),
-  saveAttachment: (messageId, index) => call("save_attachment", { messageId, index }),
-  exportSettings: (ui) => call("export_settings", { ui }),
+  // Saved into Downloads/Carteiro; on Android, also added to the media index
+  // so the files show up in Files / Downloads.
+  exportMail: () => call("export_mail").then((r) => (indexOnAndroid(r?.[0]), r)),
+  saveAttachment: (messageId, index) => call("save_attachment", { messageId, index }).then((p) => (indexOnAndroid(p), p)),
+  exportSettings: (ui) => call("export_settings", { ui }).then((p) => (indexOnAndroid(p), p)),
   importSettings: (json) => call("import_settings", { json }),
   scannerUpdateNow: () => call("scanner_update_now"),
   setScanner: (config) => call("set_scanner", { config }),
