@@ -56,14 +56,23 @@ function weekdayNames(style) {
 // ---- time zones (the web view's Intl has the zone database) ------------------------
 
 const LOCAL_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+const validZones = new Map();
 const validTz = (tz) => {
-  try { new Intl.DateTimeFormat("en", { timeZone: tz }); return true; } catch { return false; }
+  if (!validZones.has(tz)) {
+    try { new Intl.DateTimeFormat("en", { timeZone: tz }); validZones.set(tz, true); } catch { validZones.set(tz, false); }
+  }
+  return validZones.get(tz);
 };
-/// The wall clock of instant `ms` in zone `tz`, as numbers.
+/// The wall clock of instant `ms` in zone `tz`, as numbers. One formatter
+/// per zone: building them is slow (Android took ~10 s for a month view).
+const zoneFormats = new Map();
 function zoneParts(tz, ms) {
-  const p = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone: tz, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" })
-    .formatToParts(new Date(ms)).map((x) => [x.type, +x.value]));
-  return p;
+  let f = zoneFormats.get(tz);
+  if (!f) {
+    f = new Intl.DateTimeFormat("en-US", { timeZone: tz, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    zoneFormats.set(tz, f);
+  }
+  return Object.fromEntries(f.formatToParts(new Date(ms)).map((x) => [x.type, +x.value]));
 }
 /// Seconds east of UTC in zone `tz` at instant `ms`.
 function tzOffset(tz, ms) {
@@ -92,7 +101,14 @@ function otherZone(e) {
   return `${f(evDate(e, "start"))}–${f(evDate(e, "end"))} ${zoneName(e.tzid)} time`;
 }
 
+/// An event's start or end as a local Date, worked out once per event.
 function evDate(e, which) {
+  const key = `${which}:${e[which]}:${e.tzid ?? ""}:${e.floating}:${e.all_day}`;
+  const memo = (e.__dates ??= {});
+  if (!(key in memo)) memo[key] = evDateOf(e, which);
+  return new Date(memo[key]);
+}
+function evDateOf(e, which) {
   const ts = e[which] * 1000;
   if (!e.all_day && !e.floating) return new Date(ts);
   // Wall-clock time in the event's own zone: convert to the exact moment.
