@@ -1,6 +1,10 @@
 package dev.carteiro.mail
 
 import android.Manifest
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.IntentFilter
+import android.os.BatteryManager
 import android.content.ActivityNotFoundException
 import android.content.pm.PackageManager
 import android.provider.ContactsContract
@@ -33,6 +37,12 @@ class MainActivity : TauriActivity() {
     super.onCreate(savedInstanceState)
     // Mail checks and notifications while Carteiro is in the background.
     MailJobService.schedule(this)
+    // Charging keeps ClamAV running; on battery it starts only when needed.
+    registerReceiver(object : BroadcastReceiver() {
+      override fun onReceive(c: Context, i: Intent) {
+        web?.post { web?.evaluateJavascript("window.carteiroPower && window.carteiroPower(${charging(i)})", null) }
+      }
+    }, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
     // Edge-to-edge draws the page under the status and navigation bars, and
     // older WebViews don't report those insets to CSS. Pad the content by
     // the system bars, display cutout and keyboard instead, so nothing is
@@ -75,6 +85,9 @@ class MainActivity : TauriActivity() {
     }
   }
 
+  private fun charging(i: Intent?): Boolean =
+    (i?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0
+
   // Opens web and mail links in the user's browser / mail app. Same rule as
   // the desktop shell: http, https and mailto only, no control or
   // text-direction characters. Mail bodies render in a frame with scripts
@@ -94,6 +107,9 @@ class MainActivity : TauriActivity() {
 
     // The phone's contacts, only with the user's permission (asked when they
     // choose to bring them in). Read-only: Carteiro never changes them.
+    @JavascriptInterface
+    fun isCharging(): Boolean = charging(registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED)))
+
     @JavascriptInterface
     fun contactsAllowed(): Boolean =
       checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED

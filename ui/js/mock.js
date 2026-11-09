@@ -181,6 +181,7 @@ export async function mock(cmd, a) {
       : [];
     case "remove_series": { const ev = events.find((e) => e.id === a.eventId); const before = events.length;
       events = events.filter((e) => !(e.title === ev.title && e.calendar_id === ev.calendar_id && e.start >= (a.from ?? -Infinity) && e.start < (a.to ?? Infinity))); return before - events.length; }
+    case "set_charging":
     case "set_utc_offset": case "sync_phone_contacts": return null;
     case "list_calendars": return calendars;
     case "list_cal_sources": return [

@@ -18,10 +18,50 @@ use tokio::process::{Child, Command};
 /// "Update signatures now" in Settings does it at any time.
 const UPDATE_EVERY: Duration = Duration::from_secs(7 * 24 * 3600);
 const READY_TIMEOUT: Duration = Duration::from_secs(300);
+/// clamd is stopped after this long without being used.
+const IDLE_STOP: Duration = Duration::from_secs(10 * 60);
+
+/// Desktops: on mains power? Linux reads it from sysfs (no battery, or a
+/// mains supply online, counts as mains); elsewhere it's assumed. Android
+/// learns it from the activity (set_charging).
+fn on_mains_power() -> bool {
+    #[cfg(all(target_os = "linux", not(target_os = "android")))]
+    {
+        let Ok(dir) = std::fs::read_dir("/sys/class/power_supply") else { return true };
+        let mut has_battery = false;
+        for e in dir.flatten() {
+            let p = e.path();
+            let kind = std::fs::read_to_string(p.join("type")).unwrap_or_default();
+            match kind.trim() {
+                "Mains" | "USB" if std::fs::read_to_string(p.join("online")).is_ok_and(|v| v.trim() == "1") => return true,
+                "Battery" => has_battery = true,
+                _ => {}
+            }
+        }
+        !has_battery
+    }
+    #[cfg(target_os = "android")]
+    {
+        false
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    {
+        true
+    }
+}
+
+/// Re-reads the desktop's power source (Linux); others keep what they have.
+pub fn power_now() -> Option<bool> {
+    if cfg!(all(target_os = "linux", not(target_os = "android"))) { Some(on_mains_power()) } else { None }
+}
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+}
 
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct Status {
-    /// "missing" | "updating" | "starting" | "ready" | "error"
+    /// "missing" | "idle" (starts when needed) | "updating" | "starting" | "ready" | "error"
     pub state: String,
     pub detail: String,
     /// e.g. "ClamAV 1.5.4/28176/Sat Nov  7 08:21:01 2026"
@@ -45,6 +85,11 @@ pub struct Engine {
     child: tokio::sync::Mutex<Option<Child>>,
     addr: Mutex<Option<String>>,
     status: Mutex<Status>,
+    /// When the scanner was last used (unix seconds), for stopping it idle.
+    last_used: std::sync::atomic::AtomicI64,
+    starting: tokio::sync::Mutex<()>,
+    /// Charging (or a desktop on mains power): keep clamd running.
+    charging: std::sync::atomic::AtomicBool,
 }
 
 fn exe(name: &str) -> String {
@@ -219,10 +264,19 @@ impl Engine {
             b
         });
         let status = match &bins {
-            Some(_) => Status { state: "starting".into(), ..Default::default() },
+            Some(_) => Status { state: "idle".into(), ..Default::default() },
             None => Status { state: "missing".into(), detail: "ClamAV isn't included in this build".into(), version: None },
         };
-        Engine { dir: data_dir.join("clamav"), bins, child: tokio::sync::Mutex::new(None), addr: Mutex::new(None), status: Mutex::new(status) }
+        Engine {
+            dir: data_dir.join("clamav"),
+            bins,
+            child: tokio::sync::Mutex::new(None),
+            addr: Mutex::new(None),
+            status: Mutex::new(status),
+            last_used: std::sync::atomic::AtomicI64::new(0),
+            starting: tokio::sync::Mutex::new(()),
+            charging: std::sync::atomic::AtomicBool::new(on_mains_power()),
+        }
     }
 
     pub fn addr(&self) -> Option<String> {
@@ -423,43 +477,82 @@ impl Engine {
         !self.has_db() || self.last_update().and_then(|t| t.elapsed().ok()).is_none_or(|age| age >= UPDATE_EVERY)
     }
 
-    /// Keeps the engine running (idle until there's something to scan) and
-    /// its signatures updated weekly. Never returns.
+    /// Keeps the signatures updated weekly and stops clamd when it has been
+    /// idle for a while (its signatures take ~1 GB of memory). clamd itself
+    /// starts on demand (`ensure_running`): when something unchecked is
+    /// opened, saved, or checked at night. Never returns.
     pub async fn run(&self) {
         if self.bins.is_none() {
             return;
         }
+        if self.has_db() {
+            self.set("idle", "");
+        }
         loop {
-            if !self.update_due() {
-                // Signatures are recent: start straight away, no download.
-                if self.addr().is_none() {
-                    if let Err(e) = self.start_or_repair().await {
-                        self.set("error", e);
-                    }
-                }
-                let wait = self.last_update().and_then(|t| t.elapsed().ok()).map_or(UPDATE_EVERY, |age| UPDATE_EVERY.saturating_sub(age));
-                tokio::time::sleep(wait.max(Duration::from_secs(60))).await;
-                continue;
-            }
-            match self.update().await {
-                Ok(changed) => {
-                    let running = self.addr().is_some();
-                    if changed || !running {
+            if self.update_due() {
+                match self.update().await {
+                    // New signatures: a running clamd loads them.
+                    Ok(true) if self.addr().is_some() => {
                         self.stop_clamd().await;
                         if let Err(e) = self.start_or_repair().await {
                             self.set("error", e);
                         }
                     }
+                    Ok(_) if self.addr().is_none() => self.set("idle", ""),
+                    Ok(_) => {}
+                    Err(e) if !self.has_db() => self.set("error", format!("Couldn't download virus signatures: {e}")),
+                    Err(_) => {}
                 }
-                Err(e) if self.addr().is_none() => self.set("error", format!("Couldn't download virus signatures: {e}")),
-                Err(_) => {}
             }
-            tokio::time::sleep(UPDATE_EVERY).await;
+            if let Some(mains) = power_now() {
+                self.set_charging(mains);
+            }
+            // Charging: keep it running. On battery: only while it's used.
+            let charging = self.charging.load(std::sync::atomic::Ordering::Relaxed);
+            if charging && self.addr().is_none() && self.has_db() {
+                if let Err(e) = self.ensure_running().await {
+                    self.set("error", e);
+                }
+            } else if !charging && self.addr().is_some() && self.idle_for() >= IDLE_STOP {
+                self.stop_clamd().await;
+                self.set("idle", "");
+            }
+            tokio::time::sleep(Duration::from_secs(60)).await;
         }
     }
 
-    /// Starts clamd if it isn't running (no signature download).
+    /// On battery: stops clamd (it's done checking what was pending). Charging:
+    /// leaves it running.
+    pub async fn stop_unless_charging(&self) {
+        if !self.charging.load(std::sync::atomic::Ordering::Relaxed) && self.addr().is_some() {
+            self.stop_clamd().await;
+            self.set("idle", "");
+        }
+    }
+
+    /// Whether the device is charging (ClamAV then stays running).
+    pub fn set_charging(&self, on: bool) {
+        self.charging.store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Notes that the scanner is being used (it stays up while it is).
+    pub fn touch(&self) {
+        self.last_used.store(now_secs(), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn idle_for(&self) -> Duration {
+        Duration::from_secs(now_secs().saturating_sub(self.last_used.load(std::sync::atomic::Ordering::Relaxed)) as u64)
+    }
+
+    /// Starts clamd if it isn't running (no signature download unless there
+    /// are none yet).
     pub async fn ensure_running(&self) -> Result<(), String> {
+        self.touch();
+        if self.addr().is_some() {
+            return Ok(());
+        }
+        // One start at a time (several things may ask at once).
+        let _starting = self.starting.lock().await;
         if self.addr().is_some() {
             return Ok(());
         }

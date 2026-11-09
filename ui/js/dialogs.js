@@ -601,7 +601,7 @@ on("click", "update-install", async () => {
 });
 
 function engineStatus(e) {
-  const label = { ready: "Running", updating: "Updating", starting: "Starting", missing: "Not included", error: "Problem" }[e.state] ?? e.state;
+  const label = { ready: "Running", idle: "Ready (starts when needed; runs while charging)", stopped: "Ready (starts when needed)", updating: "Updating", starting: "Starting", missing: "Not included", error: "Problem" }[e.state] ?? e.state;
   return html`<span><strong>${label}</strong>${e.version ? ` · ${e.version}` : ""}${e.detail ? html`<br /><span class="muted">${e.detail}</span>` : ""}</span>`;
 }
 

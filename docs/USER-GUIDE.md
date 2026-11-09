@@ -83,7 +83,7 @@ Carteiro keeps working while it's closed, through Android's own job scheduler:
 
 - **Every 15 minutes** (when there's a network) it checks for new mail and shows a notification, even with the app closed. Android may space these checks out when the battery is low or the phone is idle for long.
 - **At night** (while charging, idle and on Wi-Fi) it downloads the offline period, checks it with ClamAV and indexes it for search, so mail opens at once the next day; ClamAV's virus signatures are also updated then, once a week. ClamAV is stopped again afterwards, to give its memory back.
-- Mail that wasn't checked ahead of time is checked when you open it.
+- **ClamAV runs only when it's worth it.** Its virus signatures take about 1 GB of memory. On battery it isn't started until you open something not checked yet: it then checks that, and everything else that arrived since the last check, and stops again. While charging, it stays running and checks new mail as it arrives. Mail already checked opens at once either way.
 
 ## Updates
 

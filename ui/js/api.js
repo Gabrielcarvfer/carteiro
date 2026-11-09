@@ -114,6 +114,7 @@ export const api = {
   previewIcs: (messageId, index) => call("preview_ics", { messageId, index }),
   addIcs: (messageId, index) => call("add_ics", { messageId, index }),
   sendRsvp: (eventId) => call("send_rsvp", { eventId }),
+  setCharging: (charging) => call("set_charging", { charging }),
   eventSources: (eventId) => call("event_sources", { eventId }),
   removeSeries: (eventId, from, to) => call("remove_series", { eventId, from, to }),
   setRsvp: (eventId, rsvp) => call("set_rsvp", { eventId, rsvp }),

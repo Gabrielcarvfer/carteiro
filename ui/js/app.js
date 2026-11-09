@@ -1318,7 +1318,12 @@ export async function withTask(key, label, work) {
 listen("activity", ({ key, label }) => task(`bg:${key}`, label));
 // The virus scanner starting up (or updating) holds back formatted mail.
 listen("scanner-ready", () => task("bg:scanner", null));
-api.scannerStatus().then((st) => { if (st?.state && st.state !== "ready" && st.state !== "disabled") task("bg:scanner", "Starting the virus scanner (ClamAV)"); }).catch(() => {});
+api.scannerStatus().then((st) => {
+  if (st?.state === "starting" || st?.state === "updating") task("bg:scanner", st.state === "updating" ? "Updating virus signatures" : "Starting the virus scanner (ClamAV)");
+}).catch(() => {});
+// Android: charging keeps ClamAV running; on battery it starts when needed.
+window.carteiroPower = (charging) => api.setCharging(charging).catch(() => {});
+if (window.CarteiroAndroid?.isCharging) window.carteiroPower(window.CarteiroAndroid.isCharging());
 
 // ---- offline download progress ---------------------------------------------------
 

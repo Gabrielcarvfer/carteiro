@@ -183,8 +183,41 @@ fn scanner(s: &AppState) -> ScannerConfig {
     let mut cfg = s.scanner.lock().map(|c| c.clone()).unwrap_or_default();
     if cfg.builtin {
         cfg.clamd_addr = s.clam.addr().unwrap_or_default();
+        if !cfg.clamd_addr.is_empty() {
+            s.clam.touch();
+        }
     }
     cfg
+}
+
+/// The phone started or stopped charging (from the Android activity):
+/// charging keeps ClamAV running; on battery it starts only when needed.
+#[tauri::command]
+fn set_charging(state: State<'_, AppState>, charging: bool) {
+    state.clam.set_charging(charging);
+}
+
+/// Starts the built-in ClamAV if it's needed and not running (it starts on
+/// demand: something unchecked is opened or saved). Shows it as a task.
+async fn scanner_on_demand(app: &AppHandle, s: &AppState) {
+    let cfg = s.scanner.lock().map(|c| c.clone()).unwrap_or_default();
+    if !cfg.enabled || !cfg.builtin || s.clam.addr().is_some() {
+        return;
+    }
+    activity(app, "scanner", Some("Starting the virus scanner (ClamAV)".into()));
+    let _ = s.clam.ensure_running().await;
+    activity(app, "scanner", None);
+    // Then everything else that arrived since the last scan, in the
+    // background; on battery ClamAV stops again once that's done (a moment
+    // later, so what was opened is shown first).
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let s = handle.state::<AppState>();
+        index_with_activity(&handle, &s).await;
+        calendar_changed(&handle);
+        s.clam.stop_unless_charging().await;
+    });
 }
 
 #[tauri::command]
@@ -278,7 +311,13 @@ fn list_unified(state: State<'_, AppState>, query: Option<String>) -> Res<Vec<Un
 async fn open_thread(app: AppHandle, state: State<'_, AppState>, account_id: i64, thread_key: String) -> Res<Vec<MessageView>> {
     let s = state.inner();
     let (acct, pw) = credential(s, account_id).await?;
-    let views = ops::open_thread(&s.store, &acct, &pw, &thread_key, &scanner(s)).await.map_err(err)?;
+    let mut views = ops::open_thread(&s.store, &acct, &pw, &thread_key, &scanner(s)).await.map_err(err)?;
+    // Something here isn't checked yet: start ClamAV, check, show it.
+    let unchecked = views.iter().any(|v| matches!(&v.verdict, mail_core::scan::Verdict::NotScanned { reason } if reason != "scanning disabled" && reason != "body not downloaded"));
+    if unchecked && s.clam.addr().is_none() {
+        scanner_on_demand(&app, s).await;
+        views = ops::open_thread(&s.store, &acct, &pw, &thread_key, &scanner(s)).await.map_err(err)?;
+    }
     calendar_changed(&app);
     Ok(views)
 }
@@ -1459,6 +1498,7 @@ fn stamp(local: Option<&str>) -> String {
 #[tauri::command]
 async fn save_attachment(app: AppHandle, state: State<'_, AppState>, message_id: i64, index: usize) -> Res<String> {
     let s = state.inner();
+    scanner_on_demand(&app, s).await;
     let path = ops::save_attachment(&s.store, message_id, index, &export_dir(&app)?, &scanner(s)).await.map_err(err)?;
     restrict_to_owner(&path);
     Ok(path.display().to_string())
@@ -1466,15 +1506,17 @@ async fn save_attachment(app: AppHandle, state: State<'_, AppState>, message_id:
 
 /// What a calendar attachment holds (after the same checks as saving it).
 #[tauri::command]
-async fn preview_ics(state: State<'_, AppState>, message_id: i64, index: usize) -> Res<ops::IcsPreview> {
+async fn preview_ics(app: AppHandle, state: State<'_, AppState>, message_id: i64, index: usize) -> Res<ops::IcsPreview> {
     let s = state.inner();
+    scanner_on_demand(&app, s).await;
     ops::preview_ics(&s.store, message_id, index, &scanner(s)).await.map_err(err)
 }
 
 /// Adds a calendar attachment to the Invitations calendar, at your request.
 #[tauri::command]
-async fn add_ics(state: State<'_, AppState>, message_id: i64, index: usize) -> Res<usize> {
+async fn add_ics(app: AppHandle, state: State<'_, AppState>, message_id: i64, index: usize) -> Res<usize> {
     let s = state.inner();
+    scanner_on_demand(&app, s).await;
     ops::add_ics(&s.store, message_id, index, &scanner(s)).await.map_err(err)
 }
 
@@ -1715,6 +1757,7 @@ pub fn run() {
             add_ics,
             remove_series,
             invite_stats,
+            set_charging,
             event_sources,
             invite_diagnostics,
             send_rsvp,
