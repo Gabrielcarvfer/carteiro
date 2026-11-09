@@ -1586,7 +1586,11 @@ impl Store {
     }
 
     pub fn unreadable_invite_msgs(&self, limit: u32) -> Result<Vec<i64>> {
-        let mut st = self.conn.prepare("SELECT msg FROM invite_msgs WHERE outcome = 'no readable calendar' LIMIT ?1")?;
+        // Messages that have a calendar file by its type but gave no meeting.
+        let mut st = self.conn.prepare(
+            "SELECT i.msg FROM invite_msgs i JOIN messages m ON m.id = i.msg
+             WHERE i.outcome IN ('no calendar', 'no readable calendar', 'nothing') AND m.att_types LIKE '% ics %' LIMIT ?1",
+        )?;
         let rows = st.query_map([limit], |r| r.get(0))?.collect::<rusqlite::Result<Vec<i64>>>()?;
         Ok(rows)
     }
@@ -1597,7 +1601,7 @@ impl Store {
     pub fn invite_stats(&self) -> Result<Vec<(String, i64)>> {
         let mut out: Vec<(String, i64)> = self
             .conn
-            .prepare("SELECT CASE WHEN outcome = '' THEN 'checked before' ELSE outcome END, COUNT(*) FROM invite_msgs GROUP BY 1")?
+            .prepare("SELECT CASE WHEN outcome = '' THEN 'checked before' ELSE outcome END, COUNT(*) FROM invite_msgs WHERE outcome NOT IN ('no calendar', 'no readable calendar') GROUP BY 1")?
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<rusqlite::Result<_>>()?;
         let waiting: i64 = self.conn.query_row(

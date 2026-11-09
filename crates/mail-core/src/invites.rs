@@ -74,7 +74,7 @@ pub fn import(store: &mut Store, msg: i64, sender: &str, raw: &[u8], now: i64) -
             }
         }
     }
-    let outcome = if parts.is_empty() { "no readable calendar" } else { outcomes.iter().copied().find(|o| *o != "answer").unwrap_or("answer") };
+    let outcome = if parts.is_empty() { "no calendar" } else { outcomes.iter().copied().find(|o| *o != "answer").unwrap_or("answer") };
     store.mark_invites(msg, &touched, outcome)?;
     Ok(touched)
 }
