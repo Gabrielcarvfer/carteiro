@@ -110,7 +110,9 @@ async fn signatures_version(cfg: &ScannerConfig) -> Option<String> {
         .map(str::trim)
         .filter(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()))
         .map(str::to_string);
-    *VERSION_CACHE.lock().ok()? = Some((cfg.clamd_addr.clone(), v.clone(), now));
+    // No answer is asked again within 30 s (clamd may be about to start).
+    let at = if v.is_some() { now } else { now - 570 };
+    *VERSION_CACHE.lock().ok()? = Some((cfg.clamd_addr.clone(), v.clone(), at));
     v
 }
 
@@ -126,7 +128,18 @@ pub async fn scan_cached(store: &std::sync::Mutex<crate::store::Store>, cfg: &Sc
     if let Some((Some(signature), _)) = &known {
         return Verdict::Infected { signature: signature.clone() };
     }
-    let version = signatures_version(cfg).await;
+    // The signature version now, or, while clamd is starting (or the app was
+    // just reopened), the last one it reported: content found clean with it
+    // needn't wait for clamd.
+    let version = match signatures_version(cfg).await {
+        Some(v) => {
+            if let Ok(st) = store.lock() {
+                let _ = st.set_secret("clamav_version", &v);
+            }
+            Some(v)
+        }
+        None => store.lock().ok().and_then(|st| st.get_secret("clamav_version").ok().flatten()),
+    };
     if let (Some((None, seen)), Some(v)) = (&known, &version) {
         if seen == v {
             return Verdict::Clean;
@@ -361,6 +374,13 @@ mod install_id_tests {
         assert_eq!(scan_cached(&store, &cfg, b"hello").await, Verdict::Clean);
         assert_eq!(scan_cached(&store, &cfg, b"an EVIL file").await, evil);
         assert_eq!(scans.load(Ordering::SeqCst), 4);
+        // clamd down (restarting): content clean with the last version opens
+        // at once; new content waits.
+        let down = ScannerConfig { clamd_addr: "127.0.0.1:1".into(), ..cfg.clone() };
+        *crate::scan::VERSION_CACHE.lock().unwrap() = None;
+        assert_eq!(scan_cached(&store, &down, b"hello").await, Verdict::Clean, "known clean, no clamd needed");
+        assert!(matches!(scan_cached(&store, &down, b"never seen").await, Verdict::NotScanned { .. }));
+        assert_eq!(scan_cached(&store, &down, b"an EVIL file").await, evil, "infected stays blocked");
         // Turned off: nothing is claimed.
         let off = ScannerConfig { enabled: false, ..cfg.clone() };
         assert!(matches!(scan_cached(&store, &off, b"hello").await, Verdict::NotScanned { .. }));

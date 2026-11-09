@@ -354,6 +354,7 @@ impl Engine {
             format!(
                 "DatabaseDirectory {db}\n{listen}\nForeground yes\nLogFile {log}\nLogTime yes\nPidFile {pid}\n\
                  MaxThreads 4\nStreamMaxLength 150M\nMaxScanSize 400M\nMaxFileSize 150M\nMaxRecursion 17\n\
+                 SelfCheck 0\nConcurrentDatabaseReload no\n\
                  AlertBrokenExecutables yes\nAlertEncrypted no\nAlertOLE2Macros no\nPhishingSignatures yes\nPhishingScanURLs yes\n",
                 db = self.db_dir().display(),
                 log = self.dir.join("clamd.log").display(),
