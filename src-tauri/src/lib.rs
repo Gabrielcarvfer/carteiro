@@ -1017,6 +1017,53 @@ async fn send_rsvp(state: State<'_, AppState>, event_id: i64) -> Res<ops::SendRe
     ops::send_rsvp(&s.store, &account, &cred, event_id).await.map_err(err)
 }
 
+#[derive(Serialize)]
+struct EventSource {
+    message_id: i64,
+    account_id: i64,
+    thread_key: String,
+    folder: String,
+    subject: String,
+    from: String,
+    date: i64,
+    /// What the message did to the meeting: "added", "cancelled", "answer"…
+    outcome: String,
+}
+
+/// The mail a meeting from an invitation came from (oldest first).
+#[tauri::command]
+fn event_sources(state: State<'_, AppState>, event_id: i64) -> Res<Vec<EventSource>> {
+    let st = lock(&state)?;
+    let Some(ev) = st.event(event_id).map_err(err)? else { return Ok(Vec::new()) };
+    if ev.remote_id.is_empty() {
+        return Ok(Vec::new());
+    }
+    // A copy kept apart ("uid#sender") came from the same mail as its uid.
+    let mut out = Vec::new();
+    for (id, outcome) in st.invite_sources(&ev.remote_id).map_err(err)? {
+        if let Some(m) = st.message(id).map_err(err)? {
+            let from = if m.from.name.is_empty() { m.from.email.clone() } else { m.from.name.clone() };
+            out.push(EventSource { message_id: id, account_id: m.account_id, thread_key: m.thread_key, folder: m.folder, subject: m.subject, from, date: m.date, outcome });
+        }
+    }
+    Ok(out)
+}
+
+/// For diagnosis: the shapes (no contents) of calendar parts in up to
+/// `limit` messages whose calendar file wasn't readable.
+#[tauri::command]
+fn invite_diagnostics(state: State<'_, AppState>, limit: u32) -> Res<Vec<serde_json::Value>> {
+    let st = lock(&state)?;
+    let ids = st.unreadable_invite_msgs(limit).map_err(err)?;
+    let mut out = Vec::new();
+    for id in ids {
+        if let Some(raw) = st.raw(id).map_err(err)? {
+            out.push(serde_json::json!(mail_core::invites::calendar_part_shapes(&raw)));
+        }
+    }
+    Ok(out)
+}
+
 /// How messages carrying calendar files fared (counts per outcome).
 #[tauri::command]
 fn invite_stats(state: State<'_, AppState>) -> Res<Vec<(String, i64)>> {
@@ -1659,6 +1706,8 @@ pub fn run() {
             add_ics,
             remove_series,
             invite_stats,
+            event_sources,
+            invite_diagnostics,
             send_rsvp,
             set_utc_offset,
             restore_upload,

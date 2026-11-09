@@ -1045,6 +1045,12 @@ on("click", "settings", () => { S.drawer = false; layoutState(); openSettings();
 on("click", "add-account", () => { closeAccountMenu(); openSetup(true); });
 on("click", "menu", () => { S.drawer = true; layoutState(); });
 on("click", "scrim", () => closeDrawer());
+/** Opens a message in the mail view (from elsewhere, e.g. a meeting's details). */
+export function showMessage(accountId, threadKey, messageId) {
+  document.querySelector("[data-click=mode][data-mode=mail]")?.click();
+  openThread(refOf(accountId, threadKey), messageId);
+}
+
 export function closeDrawer() {
   S.drawer = false;
   layoutState();

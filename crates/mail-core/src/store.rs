@@ -1116,13 +1116,24 @@ impl Store {
     }
 
     /// Downloaded messages whose text hasn't been scanned for indexing yet.
+    /// Messages to scan and index, each whole: its stored attachments are
+    /// put back in (the `raw` column alone lacks them).
     pub fn unindexed(&self, limit: u32) -> Result<Vec<(i64, Vec<u8>)>> {
-        let mut st = self.conn.prepare_cached(
-            "SELECT m.id, m.raw FROM messages m LEFT JOIN msg_text t ON t.msg = m.id
-             WHERE m.raw IS NOT NULL AND t.msg IS NULL ORDER BY m.date DESC LIMIT ?1",
-        )?;
-        let rows = st.query_map([limit], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
+        let ids: Vec<i64> = self
+            .conn
+            .prepare_cached(
+                "SELECT m.id FROM messages m LEFT JOIN msg_text t ON t.msg = m.id
+                 WHERE m.raw IS NOT NULL AND t.msg IS NULL ORDER BY m.date DESC LIMIT ?1",
+            )?
+            .query_map([limit], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        let mut out = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(raw) = self.raw(id)? {
+                out.push((id, raw));
+            }
+        }
+        Ok(out)
     }
 
     /// Whether a message's text is already in the search index.
@@ -1139,14 +1150,17 @@ impl Store {
         Ok(())
     }
 
-    /// Clean messages indexed before attachment contents were searchable
-    /// are indexed again (once). Returns how many.
+    /// Mail is scanned and indexed again (once) when the way it's done
+    /// changed. Returns how many.
     pub fn reindex_for_attachments(&self) -> Result<usize> {
-        if self.get_secret("index_version")?.as_deref() == Some("2") {
+        // 3: mail was scanned and indexed without its larger attachments
+        // (they're stored apart); everything is checked again, whole.
+        if self.get_secret("index_version")?.as_deref() == Some("3") {
             return Ok(0);
         }
-        let n = self.conn.execute("DELETE FROM msg_text WHERE status = 'clean'", [])?;
-        self.set_secret("index_version", "2")?;
+        let n = self.conn.execute("DELETE FROM msg_text", [])?;
+        self.conn.execute("DELETE FROM invite_msgs", [])?;
+        self.set_secret("index_version", "3")?;
         Ok(n)
     }
 
@@ -1439,14 +1453,15 @@ impl Store {
     }
 
     /// Whether `sender` may change the series `uid`: it's new, or they sent it
-    /// first, or they're its organizer, or it's the same organizer's meeting.
-    pub fn may_change_invite(&self, uid: &str, sender: &str, organizer: &str) -> Result<bool> {
+    /// first, or they're its organizer. (What a file *says* about its
+    /// organizer proves nothing: anyone can write it.)
+    pub fn may_change_invite(&self, uid: &str, sender: &str, _organizer: &str) -> Result<bool> {
         let row: Option<(String, String)> =
             self.conn.query_row("SELECT sender, organizer FROM invite_series WHERE uid = ?1", [uid], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
-        let (sender, organizer) = (sender.to_lowercase(), organizer.to_lowercase());
+        let sender = sender.to_lowercase();
         Ok(match row {
             None => true,
-            Some((owner, known)) => owner == sender || (!known.is_empty() && (known == sender || known == organizer)),
+            Some((owner, known)) => owner == sender || (!known.is_empty() && known == sender),
         })
     }
 
@@ -1556,6 +1571,24 @@ impl Store {
     pub fn mark_invites(&self, msg: i64, uids: &[String], outcome: &str) -> Result<()> {
         self.conn.execute("INSERT OR REPLACE INTO invite_msgs (msg, uids, outcome) VALUES (?1, ?2, ?3)", params![msg, serde_json::to_string(uids)?, outcome])?;
         Ok(())
+    }
+
+    /// The messages a meeting came from, oldest first: (message id, what it
+    /// did: "added", "cancelled", …). For linking an event to its mail.
+    pub fn invite_sources(&self, uid: &str) -> Result<Vec<(i64, String)>> {
+        let pattern = like_pattern(&serde_json::to_string(uid)?);
+        let mut st = self.conn.prepare(
+            "SELECT i.msg, i.outcome FROM invite_msgs i JOIN messages m ON m.id = i.msg
+             WHERE i.uids LIKE ?1 ESCAPE '\\' ORDER BY m.date, m.id",
+        )?;
+        let rows = st.query_map([pattern], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn unreadable_invite_msgs(&self, limit: u32) -> Result<Vec<i64>> {
+        let mut st = self.conn.prepare("SELECT msg FROM invite_msgs WHERE outcome = 'no readable calendar' LIMIT ?1")?;
+        let rows = st.query_map([limit], |r| r.get(0))?.collect::<rusqlite::Result<Vec<i64>>>()?;
+        Ok(rows)
     }
 
     /// How the messages carrying calendar files fared: outcome -> count, plus
@@ -2299,5 +2332,17 @@ mod tests {
         assert_eq!(s.search_hits(a, "INBOX", &key, "handover").unwrap(), [mid]);
         assert_eq!(s.search_hits(a, "INBOX", &key, "project").unwrap(), [last, mid, root], "newest first");
         assert!(s.search_hits(a, "INBOX", &key, "nothing-like-this").unwrap().is_empty());
+    }
+
+    #[test]
+    fn mail_is_scanned_and_indexed_whole() {
+        let (s, a) = store_with_account();
+        // An attachment big enough to be stored apart from the message.
+        let big = crate::b64::encode(vec![b'Z'; 20_000]);
+        let raw = format!("Message-ID: <w@x>\r\nFrom: a@x.org\r\nSubject: whole\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nhi\r\n--b\r\nContent-Type: application/octet-stream; name=\"big.bin\"\r\nContent-Transfer-Encoding: base64\r\n\r\n{big}\r\n--b--\r\n").into_bytes();
+        let id = s.insert_message(&NewMessage { account_id: a, folder: "INBOX".into(), uid: Some(1), pop_uidl: None, meta: crate::message::parse_meta(&raw), seen: false, flagged: false, size: 1, raw: Some(raw.clone()) }).unwrap();
+        let stored: Vec<u8> = s.conn.query_row("SELECT raw FROM messages WHERE id = ?1", [id], |r| r.get(0)).unwrap();
+        assert!(stored.len() < raw.len(), "the attachment is stored apart");
+        assert_eq!(s.unindexed(10).unwrap(), [(id, raw)], "what gets scanned and indexed is the whole message");
     }
 }

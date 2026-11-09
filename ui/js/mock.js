@@ -175,6 +175,10 @@ export async function mock(cmd, a) {
     case "preview_ics": return { method: "REQUEST", in_calendar: false, events: [{ title: "Q3 planning", start: Math.floor(now / 86400) * 86400 + 2 * 86400 + 14 * 3600, end: Math.floor(now / 86400) * 86400 + 2 * 86400 + 15 * 3600, all_day: false, floating: false, recurring: true, tzid: "", location: "Room 4" }] };
     case "add_ics": return 1;
     case "send_rsvp": return "sent";
+    case "event_sources": return events.find((e) => e.id === a.eventId)?.remote_id === "offsite-1"
+      ? [{ message_id: 3, account_id: 1, thread_key: "t1", folder: "INBOX", subject: "Team offsite", from: "Ana Souza", date: now - 86400 * 3, outcome: "added" },
+         { message_id: 2, account_id: 1, thread_key: "t1", folder: "INBOX", subject: "Canceled: Team offsite", from: "Ana Souza", date: now - 86400, outcome: "cancelled" }]
+      : [];
     case "remove_series": { const ev = events.find((e) => e.id === a.eventId); const before = events.length;
       events = events.filter((e) => !(e.title === ev.title && e.calendar_id === ev.calendar_id && e.start >= (a.from ?? -Infinity) && e.start < (a.to ?? Infinity))); return before - events.length; }
     case "set_utc_offset": case "sync_phone_contacts": return null;

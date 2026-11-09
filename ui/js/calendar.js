@@ -4,7 +4,7 @@
 import { api } from "./api.js";
 import { $, ask, choose, html, on, put, raw } from "./dom.js";
 import { icon } from "./format.js";
-import { closeDrawer, toast } from "./app.js";
+import { closeDrawer, showMessage, toast } from "./app.js";
 
 const C = {
   view: null, // "day" | "week" | "month" | "agenda"
@@ -470,6 +470,23 @@ function parseLocal(date, time) {
   return new Date(y, m - 1, d, h, mi);
 }
 
+// The mail a meeting came from: the invitation, updates, a cancellation.
+const SOURCE_KIND = { added: "Invitation", cancelled: "Cancellation", answer: "Reply", "older update": "Older update" };
+async function showSources(ev) {
+  const list = await api.eventSources(ev.id).catch(() => []);
+  const box = $("#modal .ev-sources");
+  if (!box || !list.length) return;
+  box.hidden = false;
+  put(box, html`<span class="label">From mail</span>${list.map((m) => html`
+    <button class="linkish ev-source" data-click="ev-source" data-acct="${m.account_id}" data-key="${m.thread_key}" data-id="${m.message_id}">
+      ${icon("read", 14)} <strong>${SOURCE_KIND[m.outcome] ?? "Message"}</strong> from ${m.from} · ${new Date(m.date * 1000).toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" })}
+      <span class="muted small ellipsis">${m.subject}</span></button>`)}`);
+}
+on("click", "ev-source", (el) => {
+  closeEditor();
+  showMessage(+el.dataset.acct, el.dataset.key, +el.dataset.id);
+});
+
 function openEditor(ev) {
   const writable = C.calendars.filter((c) => !c.read_only);
   if (!writable.length) return toast("No writable calendar");
@@ -502,6 +519,7 @@ function openEditor(ev) {
           ${ev.id ? html`<div class="stack"><span class="label">Will you go? <span class="muted small">${isInvitation(ev) ? "(kept here unless you send it)" : "(only noted here)"}</span></span>${rsvpButtons(ev)}</div>` : ""}
           <label class="stack"><span>Location</span><input name="location" value="${ev.location ?? ""}" /></label>
           <label class="stack"><span>Notes</span><textarea name="description" rows="4">${ev.description ?? ""}</textarea></label>
+          ${ev.id && ev.remote_id ? html`<div class="ev-sources" hidden></div>` : ""}
           <div class="error" hidden></div>
         </div>
         <footer>
@@ -514,6 +532,7 @@ function openEditor(ev) {
     </div>`);
   $("#modal [name=title]").focus();
   tzNote();
+  if (ev.id && ev.remote_id) showSources(ev);
 }
 
 /// The times in your own zone, when the event's zone runs on another offset.

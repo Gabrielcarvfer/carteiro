@@ -31,6 +31,29 @@ pub fn calendar_parts(raw: &[u8]) -> Vec<String> {
         .collect()
 }
 
+/// The shape of a message's calendar-looking parts, without their contents:
+/// (content type, file name extension, size, first bytes as hex, has
+/// VCALENDAR, has VEVENT, method), case-insensitive. For diagnosis.
+pub fn calendar_part_shapes(raw: &[u8]) -> Vec<(String, String, usize, String, bool, bool, String)> {
+    let Some(msg) = MessageParser::default().parse(raw) else { return Vec::new() };
+    msg.parts
+        .iter()
+        .filter(|p| {
+            let ct = p.content_type().map(|c| format!("{}/{}", c.ctype(), c.subtype().unwrap_or("")).to_ascii_lowercase()).unwrap_or_default();
+            let name = p.attachment_name().unwrap_or("").to_ascii_lowercase();
+            ct.contains("calendar") || ct.contains("ics") || name.ends_with(".ics") || name.ends_with(".vcs")
+        })
+        .map(|p| {
+            let ct = p.content_type().map(|c| format!("{}/{}", c.ctype(), c.subtype().unwrap_or(""))).unwrap_or_default();
+            let ext = p.attachment_name().and_then(|n| n.rsplit_once('.').map(|(_, e)| e.to_string())).unwrap_or_default();
+            let b = p.contents();
+            let up = String::from_utf8_lossy(b).to_ascii_uppercase();
+            let method = up.lines().find_map(|l| l.strip_prefix("METHOD:")).unwrap_or("").trim().to_string();
+            (ct, ext, b.len(), b.iter().take(6).map(|x| format!("{x:02x}")).collect(), up.contains("BEGIN:VCALENDAR"), up.contains("BEGIN:VEVENT"), method)
+        })
+        .collect()
+}
+
 /// Reads the invitations in a clean message from `sender` into the
 /// calendar, once per message. Returns the series it touched.
 pub fn import(store: &mut Store, msg: i64, sender: &str, raw: &[u8], now: i64) -> Result<Vec<String>> {
@@ -231,9 +254,13 @@ mod tests {
         }
         assert_eq!(by_series(&s, "weekly-1"), ["Team sync"; 4], "Ana's meeting untouched");
         assert_eq!(by_series(&s, "weekly-1#mallory@evil.example").len(), 4);
-        // …and their cancellation doesn't touch Ana's either.
+        // …and their cancellation doesn't touch Ana's either, even naming Ana as organizer.
         import(&mut s, 3, "mallory@evil.example", &mail(&ics("CANCEL", SERIES), false), now).unwrap();
-        assert!(titles(&s).iter().filter(|t| t.1 == "cancelled").count() == 4, "only the copy is cancelled");
+        fn cancelled(s: &Store, uid: &str) -> usize {
+            s.events_between(0, i64::MAX / 2).unwrap().iter().filter(|e| e.remote_id == uid && e.event.cancelled).count()
+        }
+        assert_eq!(cancelled(&s, "weekly-1"), 0, "Ana's meeting isn't cancelled by a stranger");
+        assert_eq!(cancelled(&s, "weekly-1#mallory@evil.example"), 4, "only the stranger's copy is");
         // The organizer may update, even when forwarded by someone else first.
         let fwd = SERIES.replace("weekly-1", "fwd-1");
         import(&mut s, 4, "assistant@example.org", &mail(&ics("REQUEST", &fwd), false), now).unwrap();
@@ -254,6 +281,11 @@ mod tests {
         let old = "BEGIN:VEVENT\r\nUID:old-1\r\nSUMMARY:Kickoff\r\nDTSTART:20251001T090000Z\r\nDTEND:20251001T100000Z\r\nEND:VEVENT\r\n";
         assert_eq!(import(&mut s, 10, "carol@example.org", &mail(&ics("REQUEST", old), true), now).unwrap(), ["old-1"]);
         assert_eq!(s.invites_of(10, now).unwrap()[0].event.title, "Kickoff", "a year-old meeting is kept");
+        // Each meeting knows the mail it came from (and what each did).
+        let src: Vec<(i64, String)> = s.invite_sources("gone-1").unwrap();
+        assert_eq!(src.len(), 1);
+        assert_eq!(src[0].1, "cancelled");
+        assert_eq!(s.invite_sources("weekly-1").unwrap().iter().map(|x| x.1.as_str()).collect::<Vec<_>>(), ["added"]);
         // What happened to each message is counted.
         let stats: std::collections::HashMap<String, i64> = s.invite_stats().unwrap().into_iter().collect();
         assert_eq!(stats.get("answer"), Some(&1));

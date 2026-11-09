@@ -560,3 +560,6 @@ h3.sect { font-size: 15px; margin: 18px 0 4px; }
 /* cancelled meetings are kept, struck through */
 .cancelled { text-decoration: line-through; opacity: 0.55; }
 .cancelled-tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: 600; color: var(--danger); border: 1px solid var(--danger); text-decoration: none; }
+.ev-sources { display: flex; flex-direction: column; gap: 6px; }
+.ev-source { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; text-align: left; }
+.ev-source .ellipsis { flex-basis: 100%; }

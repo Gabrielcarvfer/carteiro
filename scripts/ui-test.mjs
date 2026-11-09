@@ -233,7 +233,12 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 860, false], ["phone", 39
     expect(await js(`${el}?.classList.contains("cancelled")`), "not shown as cancelled");
     await js(`${el}.click()`); await sleep(400);
     expect(await js(`document.querySelector("#modal .cancelled-tag")?.textContent`) === "Cancelled", "editor doesn't say cancelled");
-    await click("#modal [data-click=cal-close]"); await sleep(200);
+    await sleep(200);
+    const links = await js(`[...document.querySelectorAll("#modal .ev-source strong")].map((x) => x.textContent)`);
+    expect(links.join() === "Invitation,Cancellation", `links to the mail: ${links}`);
+    await js(`document.querySelectorAll("#modal .ev-source")[1].click()`); await sleep(900);
+    expect(await js(`!document.querySelector("#reader .card.focus")?.id.endsWith("-2") === false`), "the cancellation email isn't the one opened");
+    expect(await js(`document.querySelector("#calendar").hidden`), "didn't switch to mail");
   });
   await test("small month marks days with events", async () => {
     await click("[data-mode=calendar]"); await sleep(1000);
