@@ -551,3 +551,8 @@ h3.sect { font-size: 15px; margin: 18px 0 4px; }
   .activity { left: 8px; right: 8px; max-width: none; bottom: calc(64px + env(safe-area-inset-bottom)); }
   .activity:has(~ .progress:not([hidden])) { bottom: calc(150px + env(safe-area-inset-bottom)); }
 }
+
+/* the ClamAV status sits at the bottom right of the message header */
+.card:not(.collapsed) .msg-head { padding-bottom: 30px; }
+.scan-slot { position: absolute; right: 14px; bottom: 8px; }
+.toolbar select.move { min-width: 0; max-width: 38%; }

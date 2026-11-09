@@ -4,7 +4,7 @@ import { api } from "./api.js";
 import { $, ask, html, on, put } from "./dom.js";
 import { bytes, folderLabel, icon } from "./format.js";
 import { WEEK_START_KEY, refreshCalendar, weekStart } from "./calendar.js";
-import { S, SWIPE_ACTIONS, UNIFIED, accountById, loadAccounts, refreshFolders, refreshThreads, selectAccount, swipeActions, toast } from "./app.js";
+import { S, SWIPE_ACTIONS, TEXT_SIZES, UNIFIED, accountById, loadAccounts, refreshFolders, refreshThreads, selectAccount, setTextSize, swipeActions, textSize, toast } from "./app.js";
 
 const closeModal = () => put("#modal", "");
 const modal = (title, body, footer = "", closable = true) => html`
@@ -442,6 +442,8 @@ export async function openSettings(start = "general") {
           <h3>Notifications</h3>
           <label class="check"><input type="checkbox" name="notify" ${app.notify ? "checked" : ""} data-change="app-autosave" /> Notify me when new mail arrives</label>
           <label class="check hide-narrow"><input type="checkbox" name="close-to-tray" ${app.close_to_tray ? "checked" : ""} data-change="app-autosave" /> Closing the window keeps Carteiro running in the system tray</label>
+          <h3>Text size</h3>
+          <div class="workdays text-size">${TEXT_SIZES.map(([v, l]) => html`<label class="day"><input type="radio" name="text-size" value="${v}" ${textSize() === v ? "checked" : ""} data-change="text-size" /><span style="font-size:${Math.round(14 * v)}px">${l}</span></label>`)}</div>
           <h3>Calendar</h3>
           <label class="stack narrow-field"><span>Week starts on</span>
             <select data-change="week-start">
@@ -628,6 +630,8 @@ on("click", "scanner-save", async (el) => {
     setTimeout(() => (el.textContent = "Save"), 2000);
   } catch (e) { toast(String(e)); }
 });
+
+on("change", "text-size", (el) => setTextSize(+el.value));
 
 on("change", "swipe-pref", (el) => {
   const picked = [...document.querySelectorAll("#modal [name=swipe-act]:checked")].map((x) => x.value);
@@ -847,7 +851,7 @@ on("click", "export-mail", (el) => busy(el, "Saving…", async () => {
 
 const uiPrefs = () => {
   const get = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
-  return { theme: get("carteiro.theme"), week_start: get(WEEK_START_KEY), swipe_actions: get("carteiro.swipe.actions") };
+  return { theme: get("carteiro.theme"), week_start: get(WEEK_START_KEY), swipe_actions: get("carteiro.swipe.actions"), text_size: get("carteiro.textSize") };
 };
 
 const IS_ANDROID = !!window.CarteiroAndroid;
@@ -914,6 +918,7 @@ on("click", "restore-go", (el) => {
         if (r.ui?.theme) localStorage.setItem("carteiro.theme", r.ui.theme);
         if (r.ui?.week_start != null) localStorage.setItem(WEEK_START_KEY, r.ui.week_start);
         if (r.ui?.swipe_actions) localStorage.setItem("carteiro.swipe.actions", r.ui.swipe_actions);
+        if (r.ui?.text_size) localStorage.setItem("carteiro.textSize", r.ui.text_size);
       } catch {}
       toast(`Restored ${r.accounts} account${r.accounts === 1 ? "" : "s"}`);
       setTimeout(() => location.reload(), 1200);
@@ -936,6 +941,7 @@ on("change", "import-file", async (el) => {
       if (ui?.theme) localStorage.setItem("carteiro.theme", ui.theme);
       if (ui?.week_start != null) localStorage.setItem(WEEK_START_KEY, ui.week_start);
       if (ui?.swipe_actions) localStorage.setItem("carteiro.swipe.actions", ui.swipe_actions);
+      if (ui?.text_size) { localStorage.setItem("carteiro.textSize", ui.text_size); setTextSize(+ui.text_size); }
     } catch {}
     const lines = [
       r.accounts_added.length && `Added accounts: ${r.accounts_added.join(", ")}`,

@@ -1515,6 +1515,19 @@ impl Store {
         Ok(self.conn.query_row("SELECT EXISTS(SELECT 1 FROM events WHERE calendar_id = ?1 AND remote_id = ?2)", params![cal, uid], |r| r.get(0))?)
     }
 
+    /// Invitation checks from before past meetings were kept are done again
+    /// (once): those messages' invitations go into the calendar now.
+    pub fn recheck_invites_once(&self) -> Result<usize> {
+        if self.get_secret("invites_version")?.as_deref() == Some("2") {
+            return Ok(0);
+        }
+        let n = self.conn.execute("DELETE FROM invite_msgs", [])?;
+        // Messages already indexed are looked at again by the indexer.
+        self.conn.execute("DELETE FROM msg_text WHERE status = 'clean' AND msg IN (SELECT id FROM messages WHERE att_types LIKE '% ics %')", [])?;
+        self.set_secret("invites_version", "2")?;
+        Ok(n)
+    }
+
     pub fn invites_checked(&self, msg: i64) -> Result<bool> {
         Ok(self.conn.query_row("SELECT EXISTS(SELECT 1 FROM invite_msgs WHERE msg = ?1)", [msg], |r| r.get(0))?)
     }

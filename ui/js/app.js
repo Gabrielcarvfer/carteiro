@@ -26,6 +26,20 @@ export const S = {
   viewAcct: null, viewFolders: null,
 };
 
+// ---- text size ---------------------------------------------------------------
+
+export const TEXT_SIZES = [[0.9, "Small"], [1, "Default"], [1.15, "Large"], [1.3, "Larger"]];
+export function textSize() {
+  try { return +localStorage.getItem("carteiro.textSize") || 1; } catch { return 1; }
+}
+/// Scales the whole interface, mail included (layouts are in px).
+export function setTextSize(v) {
+  if (!TEXT_SIZES.some(([x]) => x === v)) v = 1;
+  try { localStorage.setItem("carteiro.textSize", String(v)); } catch {}
+  document.documentElement.style.zoom = v === 1 ? "" : String(v);
+}
+setTextSize(textSize());
+
 /** Pseudo-folder: every account's Inbox merged. */
 export const UNIFIED = "__all_inboxes__";
 
@@ -875,7 +889,7 @@ function renderMessage(m) {
           <div><strong>${name}</strong> ${open && m.from.name ? html`<span class="muted email">&lt;${m.from.email}&gt;</span>` : ""}</div>
           <div class="muted small ellipsis">${open ? `To: ${addrList(m.to)}${m.cc.length ? `; Cc: ${addrList(m.cc)}` : ""}` : m.snippet}</div>
         </div>
-        <div class="when muted small" title="${longDate(m.date)}">${shortDate(m.date)}${open ? scanBadge(m) : ""}</div>
+        <div class="when muted small" title="${longDate(m.date)}">${shortDate(m.date)}</div>
         ${open ? html`<div class="msg-actions">
           <button class="icon-btn" title="Reply" data-click="reply" data-id="${m.id}">${icon("reply")}</button>
           <button class="icon-btn hide-narrow" title="Reply all" data-click="reply-all" data-id="${m.id}">${icon("replyall")}</button>
@@ -888,6 +902,7 @@ function renderMessage(m) {
             <button class="show-narrow" data-click="forward" data-id="${m.id}">Forward</button>
           </div>` : ""}
         </div>` : ""}
+        ${open ? html`<div class="scan-slot">${scanBadge(m)}</div>` : ""}
       </div>
       ${open ? html`
         ${m.verdict.status === "infected" ? html`<div class="banner danger">${icon("shield", 16)} Malware detected (${m.verdict.signature}). Formatted content and attachments are blocked.</div>` : ""}

@@ -14,7 +14,9 @@ use std::time::Duration;
 use serde::Serialize;
 use tokio::process::{Child, Command};
 
-const UPDATE_EVERY: Duration = Duration::from_secs(12 * 3600);
+/// Signatures are refreshed weekly (a download costs data and battery);
+/// "Update signatures now" in Settings does it at any time.
+const UPDATE_EVERY: Duration = Duration::from_secs(7 * 24 * 3600);
 const READY_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -274,6 +276,9 @@ impl Engine {
             .map_err(|e| format!("couldn't run freshclam: {e}"))?;
         let log = String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
         // freshclam exits 1 when everything is already up to date.
+        if out.status.success() || out.status.code() == Some(1) {
+            let _ = std::fs::write(self.dir.join("updated.stamp"), b"");
+        }
         if !out.status.success() && out.status.code() != Some(1) {
             let last = log.lines().rev().find(|l| l.contains("ERROR") || l.contains("WARNING")).unwrap_or("update failed").trim().to_string();
             if !self.has_db() {
@@ -408,12 +413,33 @@ impl Engine {
         }
     }
 
-    /// Keeps the engine running and its signatures fresh. Never returns.
+    /// When signatures were last checked for updates (a stamp file).
+    fn last_update(&self) -> Option<std::time::SystemTime> {
+        std::fs::metadata(self.dir.join("updated.stamp")).and_then(|m| m.modified()).ok()
+    }
+
+    fn update_due(&self) -> bool {
+        !self.has_db() || self.last_update().and_then(|t| t.elapsed().ok()).is_none_or(|age| age >= UPDATE_EVERY)
+    }
+
+    /// Keeps the engine running (idle until there's something to scan) and
+    /// its signatures updated weekly. Never returns.
     pub async fn run(&self) {
         if self.bins.is_none() {
             return;
         }
         loop {
+            if !self.update_due() {
+                // Signatures are recent: start straight away, no download.
+                if self.addr().is_none() {
+                    if let Err(e) = self.start_clamd().await {
+                        self.set("error", e);
+                    }
+                }
+                let wait = self.last_update().and_then(|t| t.elapsed().ok()).map_or(UPDATE_EVERY, |age| UPDATE_EVERY.saturating_sub(age));
+                tokio::time::sleep(wait.max(Duration::from_secs(60))).await;
+                continue;
+            }
             match self.update().await {
                 Ok(changed) => {
                     let running = self.addr().is_some();

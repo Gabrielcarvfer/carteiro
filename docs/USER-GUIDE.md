@@ -70,8 +70,8 @@ Settings → *Your data* → **Back up everything…** saves one file, `Carteiro
 
 Settings has four sections side by side: swipe sideways (or tap a title, or use the arrow keys) to move between them. Changes are saved as you make them.
 
-- **general:** your accounts; when to check for mail (every 15 minutes during working hours by default, Monday to Friday 08:00–18:00, and hourly outside them, or only when you ask); notifications; keeping Carteiro in the tray; the first day of the week.
-- **security & privacy:** turn ClamAV on or off, update its signatures, or use your own `clamd`; refresh the tracker list (it also updates daily).
+- **general:** your accounts; text size (Small to Larger); when to check for mail (every 15 minutes during working hours by default, Monday to Friday 08:00–18:00, and hourly outside them, or only when you ask); notifications; keeping Carteiro in the tray; the first day of the week.
+- **security & privacy:** turn ClamAV on or off, update its signatures (they're updated weekly by themselves; mail is checked again with new signatures when you open it), or use your own `clamd`; refresh the tracker list (it also updates daily).
 - **your data:** how much mail to keep offline (from the last day to all of it; *Download now* runs in the background, with a progress bar at the bottom of the window); backups (below); save all mail as `.mbox`; export or import your settings (passwords are never included).
 - **about:** updates (turn off automatic installation, check now, or install now), the version, and the licenses of the bundled software.
 

@@ -85,10 +85,11 @@ fn apply(store: &mut Store, sender: &str, ics: &str, now: i64, by_hand: bool, ac
         } else {
             let sequence = events.iter().map(|e| e.sequence).max().unwrap_or(0);
             let organizer = events.iter().map(|e| e.organizer.clone()).find(|o| !o.is_empty()).unwrap_or_default();
-            // Laid out from the past few months to two years after the later
-            // of today and the series' start (a far-off event still counts).
+            // Laid out from the series' start (past meetings included, so old
+            // invitations show up too) to two years after the later of today
+            // and that start, at most MAX_INSTANCES dates.
             let first = events.iter().map(|e| e.start).min().unwrap_or(now);
-            let instances = crate::recur::expand_all(events, now.min(first) - PAST, now.max(first) + FUTURE, MAX_INSTANCES);
+            let instances = crate::recur::expand_all(events, first.min(now - PAST), now.max(first) + FUTURE, MAX_INSTANCES);
             store.save_invite(&uid, sender, sequence, &instances, by_hand, &organizer, account)?
         };
         if changed {
@@ -133,7 +134,7 @@ mod tests {
             incoming: ep.clone(), smtp: ep, smtp_username: None, signature: String::new(), auth: crate::AuthMethod::Password,
         };
         s.add_account(&mut a).unwrap();
-        for uid in 1..=9 {
+        for uid in 1..=10 {
             let meta = crate::message::MessageMeta { message_id: format!("m{uid}"), from: Addr { name: String::new(), email: "x@y.org".into() }, ..Default::default() };
             s.insert_message(&crate::store::NewMessage { account_id: a.id, folder: "INBOX".into(), uid: Some(uid), pop_uidl: None, meta, seen: false, flagged: false, size: 1, raw: None }).unwrap();
         }
@@ -179,5 +180,9 @@ mod tests {
         let reply = SERIES.replace("weekly-1", "weekly-2");
         import(&mut s, 7, "bob@example.org", &mail(&ics("REPLY", &reply), false), now).unwrap();
         assert_eq!(titles(&s).len(), 4);
+        // An invitation to a meeting long past still goes in (history).
+        let old = "BEGIN:VEVENT\r\nUID:old-1\r\nSUMMARY:Kickoff\r\nDTSTART:20251001T090000Z\r\nDTEND:20251001T100000Z\r\nEND:VEVENT\r\n";
+        assert_eq!(import(&mut s, 10, "carol@example.org", &mail(&ics("REQUEST", old), true), now).unwrap(), ["old-1"]);
+        assert_eq!(s.invites_of(10, now).unwrap()[0].event.title, "Kickoff", "a year-old meeting is kept");
     }
 }

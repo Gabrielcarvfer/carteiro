@@ -1389,6 +1389,8 @@ pub fn run() {
             }
             // Mail indexed before attachment contents were searchable: once more.
             let _ = store.reindex_for_attachments();
+            // Invitations to past meetings used to be skipped: look again, once.
+            let _ = store.recheck_invites_once();
             // People from mail already here, once (new mail is collected as it arrives).
             if store.get_secret("contacts_collected").ok().flatten().is_none() {
                 let _ = store.collect_from_stored_mail();
