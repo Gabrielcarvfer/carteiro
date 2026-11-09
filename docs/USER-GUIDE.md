@@ -77,6 +77,14 @@ Settings has four sections side by side: swipe sideways (or tap a title, or use 
 
 The sun/moon button switches between light and dark.
 
+## On Android: in the background
+
+Carteiro keeps working while it's closed, through Android's own job scheduler:
+
+- **Every 15 minutes** (when there's a network) it checks for new mail and shows a notification, even with the app closed. Android may space these checks out when the battery is low or the phone is idle for long.
+- **At night** (while charging, idle and on Wi-Fi) it downloads the offline period, checks it with ClamAV and indexes it for search, so mail opens at once the next day; ClamAV's virus signatures are also updated then, once a week. ClamAV is stopped again afterwards, to give its memory back.
+- Mail that wasn't checked ahead of time is checked when you open it.
+
 ## Updates
 
 Release builds check GitHub twice a day. An update is used only if:

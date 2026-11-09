@@ -5,6 +5,7 @@
 # - installs src-tauri/android/MainActivity.kt (system bar / keyboard insets)
 #   and Carteiro's launcher icon;
 # - asks for READ_CONTACTS (used only when the user brings phone contacts in);
+# - declares the background job (MailJobService) and keeps it across reboots;
 # - keeps native libraries extracted: Android only executes files from the
 #   extracted native library folder;
 # - pins the Gradle download by SHA-256 (the generated wrapper doesn't
@@ -27,8 +28,10 @@ for abi in arm64-v8a x86_64; do
   cp "$OUT/$abi"/lib*.so "$APP/app/src/main/jniLibs/$abi/"
 done
 
-# Carteiro's activity: keeps the page clear of the system bars and keyboard.
+# Carteiro's activity: keeps the page clear of the system bars and keyboard;
+# and its background job (mail checks, notifications, night-time downloads).
 cp "$ROOT/src-tauri/android/MainActivity.kt" "$APP/app/src/main/java/dev/carteiro/mail/MainActivity.kt"
+cp "$ROOT/src-tauri/android/MailJobService.kt" "$APP/app/src/main/java/dev/carteiro/mail/MailJobService.kt"
 
 # Carteiro's launcher icon: the adaptive icon (gradient background + safe-zone
 # foreground, src-tauri/android/res) and, from `cargo tauri icon`, the plain
@@ -44,6 +47,10 @@ cp -R "$ROOT/src-tauri/android/res/." "$RES/"
 # Reading the phone's contacts (asked for only when the user brings them in).
 MANIFEST="$APP/app/src/main/AndroidManifest.xml"
 grep -q READ_CONTACTS "$MANIFEST" || sed -i 's|<uses-permission android:name="android.permission.INTERNET" />|&\n    <uses-permission android:name="android.permission.READ_CONTACTS" />|' "$MANIFEST"
+# The background job: kept across reboots, run by Android's job scheduler only.
+grep -q ACCESS_NETWORK_STATE "$MANIFEST" || sed -i 's|<uses-permission android:name="android.permission.INTERNET" />|&\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />|' "$MANIFEST"
+grep -q RECEIVE_BOOT_COMPLETED "$MANIFEST" || sed -i 's|<uses-permission android:name="android.permission.INTERNET" />|&\n    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />|' "$MANIFEST"
+grep -q MailJobService "$MANIFEST" || sed -i 's|</application>|    <service android:name=".MailJobService" android:permission="android.permission.BIND_JOB_SERVICE" android:exported="false" />\n    </application>|' "$MANIFEST"
 
 GRADLE="$APP/app/build.gradle.kts"
 grep -q useLegacyPackaging "$GRADLE" || printf '\nandroid {\n    packaging {\n        jniLibs {\n            useLegacyPackaging = true\n        }\n    }\n}\n' >> "$GRADLE"

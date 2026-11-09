@@ -480,6 +480,203 @@ fn set_settings(state: State<'_, AppState>, config: AppSettings) -> Res<()> {
 
 /// Syncs every account, notifies about new Inbox mail and tells the UI to
 /// refresh. Skips if a background sync is already running.
+// ---- the core both the app and the background job use ----------------------------
+//
+// One database connection and one ClamAV engine per process: on Android the
+// background job (MailJobService) runs in the app's process, and shares them
+// with the app when it's open.
+
+#[derive(Clone)]
+struct Core {
+    store: Arc<Mutex<Store>>,
+    clam: Arc<clamav::Engine>,
+}
+static CORE: Mutex<Option<Core>> = Mutex::new(None);
+/// The interface is running (its own loops sync, scan and notify).
+static APP_UP: AtomicBool = AtomicBool::new(false);
+/// A mail sync is running (app or background job): one at a time.
+static SYNC_BUSY: AtomicBool = AtomicBool::new(false);
+
+fn core(dir: &std::path::Path, resource_dir: Option<&std::path::Path>) -> Result<Core, String> {
+    let mut slot = CORE.lock().map_err(|_| "core lock poisoned")?;
+    if let Some(c) = slot.as_ref() {
+        return Ok(c.clone());
+    }
+    // Debug builds on Android can't be given environment variables: the local
+    // test server's CA may instead be placed in the data folder (adb
+    // run-as). Release builds never trust it.
+    #[cfg(all(debug_assertions, target_os = "android"))]
+    if std::env::var_os("CARTEIRO_TEST_CA").is_none() && dir.join("test-ca.pem").exists() {
+        std::env::set_var("CARTEIRO_TEST_CA", dir.join("test-ca.pem"));
+    }
+    let store = Store::open(&dir.join("mail.db")).map_err(err)?;
+    for f in ["mail.db", "mail.db-wal", "mail.db-shm"] {
+        restrict_to_owner(&dir.join(f));
+    }
+    store.ensure_local_calendar().map_err(err)?;
+    // Settings saved by older versions are brought up to date once.
+    let _ = load_settings(&store);
+    // Mail indexed before attachment contents were searchable: once more.
+    let _ = store.reindex_for_attachments();
+    // Invitations to past meetings used to be skipped: look again, once.
+    let _ = store.recheck_invites_once();
+    // People from mail already here, once (new mail is collected as it arrives).
+    if store.get_secret("contacts_collected").ok().flatten().is_none() {
+        let _ = store.collect_from_stored_mail();
+        let _ = store.set_secret("contacts_collected", "1");
+    }
+    let c = Core { store: Arc::new(Mutex::new(store)), clam: Arc::new(clamav::Engine::new(dir, resource_dir)) };
+    *slot = Some(c.clone());
+    Ok(c)
+}
+
+fn load_scanner(store: &Store) -> ScannerConfig {
+    store.get_secret("scanner_config").ok().flatten().and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default()
+}
+
+fn load_settings(store: &Store) -> AppSettings {
+    let mut app_settings: AppSettings = store
+        .get_secret("app_settings")
+        .ok()
+        .flatten()
+        .and_then(|j| serde_json::from_str(&j).ok())
+        .unwrap_or_default();
+    // Settings saved by older versions: the old 3-minute default
+    // becomes the working-hours schedule, once.
+    if app_settings.schedule_version < 1 {
+        let fresh = AppSettings::default();
+        if app_settings.sync_minutes <= 3 {
+            app_settings.sync_minutes = fresh.sync_minutes;
+        }
+        app_settings.work_days = fresh.work_days;
+        app_settings.work_start = fresh.work_start;
+        app_settings.work_end = fresh.work_end;
+        app_settings.off_hours_minutes = fresh.off_hours_minutes;
+        app_settings.schedule_version = 1;
+        let _ = store.set_secret("app_settings", &serde_json::to_string(&app_settings).unwrap_or_default());
+    }
+    // Sign-in registrations come with the build when none were saved.
+    let built = AppSettings::default();
+    if app_settings.google.client_id.is_empty() {
+        app_settings.google = built.google;
+    }
+    if app_settings.microsoft.client_id.is_empty() {
+        app_settings.microsoft = built.microsoft;
+    }
+    app_settings
+}
+
+/// Background work on Android (MailJobService), with the app closed or not:
+/// checks every account for new mail, and with `deep` (charging, unmetered,
+/// idle: at night) also updates the virus signatures when a week old,
+/// downloads the offline period and checks it with ClamAV, so opening mail
+/// later is quick. Returns notifications to show: (title, text).
+pub fn background_run(dir: &std::path::Path, deep: bool) -> BackgroundReport {
+    tauri::async_runtime::block_on(async {
+        if SYNC_BUSY.swap(true, Ordering::SeqCst) {
+            return BackgroundReport { log: vec!["skipped: a sync is already running".into()], ..Default::default() };
+        }
+        let mut report = BackgroundReport::default();
+        if let Err(e) = background_inner(dir, deep, &mut report).await {
+            report.log.push(e);
+        }
+        SYNC_BUSY.store(false, Ordering::SeqCst);
+        report
+    })
+}
+
+/// What a background run did: notifications to show, and a log for logcat.
+#[derive(Serialize, Default)]
+pub struct BackgroundReport {
+    notify: Vec<(String, String)>,
+    log: Vec<String>,
+}
+
+async fn background_inner(dir: &std::path::Path, deep: bool, report: &mut BackgroundReport) -> Res<()> {
+    let core = core(dir, None)?;
+    let (scanner_cfg, cfg) = {
+        let st = core.store.lock().map_err(|_| "database lock poisoned")?;
+        (load_scanner(&st), load_settings(&st))
+    };
+    let s = AppState {
+        store: core.store.clone(),
+        scanner: Mutex::new(scanner_cfg),
+        settings: Mutex::new(cfg.clone()),
+        syncing: AtomicBool::new(false),
+        last_offline: std::sync::atomic::AtomicI64::new(0),
+        tokens: Mutex::new(HashMap::new()),
+        clam: core.clam.clone(),
+        updater: updater::Updater::new(),
+        utc_offset: std::sync::atomic::AtomicI32::new(0),
+        offline_running: AtomicBool::new(false),
+    };
+    let accounts = lock(&s)?.list_accounts().map_err(err)?;
+    let mut arrived = Vec::new();
+    for a in &accounts {
+        let (acct, pw) = match credential(&s, a.id).await {
+            Ok(c) => c,
+            Err(e) => {
+                report.log.push(format!("{}: {e}", a.email));
+                continue;
+            }
+        };
+        match sync::sync_account(&s.store, &acct, &pw).await {
+            Ok(r) => {
+                report.log.push(format!("{}: {} new, {} arrived in the Inbox", a.email, r.new_messages, r.arrived.len()));
+                arrived.extend(r.arrived);
+            }
+            Err(e) => report.log.push(format!("{}: {e}", a.email)),
+        }
+        if deep {
+            match ops::download_offline(&s.store, &acct, &pw, since_for(cfg.offline_days)).await {
+                Ok(r) => report.log.push(format!("{}: {} downloaded for offline use", a.email, r.downloaded)),
+                Err(e) => report.log.push(format!("{}: offline download: {e}", a.email)),
+            }
+        }
+    }
+    if deep {
+        // Weekly signatures, then check and index what was downloaded.
+        let started_here = s.clam.addr().is_none();
+        if s.clam.update_due() {
+            let _ = s.clam.update().await;
+        }
+        match s.clam.ensure_running().await {
+            Ok(()) => match ops::index_clean_text(&s.store, &scanner(&s)).await {
+                Ok(n) => report.log.push(format!("{n} messages checked with ClamAV and indexed")),
+                Err(e) => report.log.push(format!("indexing: {e}")),
+            },
+            Err(e) => report.log.push(format!("ClamAV: {e}")),
+        }
+        // Without the app, ClamAV's memory is given back until next time.
+        if started_here && !APP_UP.load(Ordering::SeqCst) {
+            s.clam.stop().await;
+        }
+    }
+    if !cfg.notify || arrived.is_empty() {
+        return Ok(());
+    }
+    report.notify = match arrived.as_slice() {
+        [one] => vec![(one.from.clone(), if one.subject.is_empty() { "(no subject)".into() } else { one.subject.clone() })],
+        many => vec![(format!("{} new messages", many.len()), many.iter().take(3).map(|m| m.from.as_str()).collect::<Vec<_>>().join(", "))],
+    };
+    Ok(())
+}
+
+/// Android's MailJobService calls this (see src-tauri/android/MailJobService.kt).
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_dev_carteiro_mail_MailJobService_runInBackground<'a>(
+    mut env: jni::JNIEnv<'a>,
+    _this: jni::objects::JObject<'a>,
+    data_dir: jni::objects::JString<'a>,
+    deep: jni::sys::jboolean,
+) -> jni::sys::jstring {
+    let dir: String = env.get_string(&data_dir).map(Into::into).unwrap_or_default();
+    let report = if dir.is_empty() { BackgroundReport::default() } else { background_run(std::path::Path::new(&dir), deep != 0) };
+    let json = serde_json::to_string(&report).unwrap_or_else(|_| "{}".into());
+    env.new_string(json).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
+}
+
 /// Tells the interface what's running in the background (`label`), or that
 /// it ended (None), so it can show it.
 fn activity(app: &AppHandle, key: &str, label: Option<String>) {
@@ -488,9 +685,10 @@ fn activity(app: &AppHandle, key: &str, label: Option<String>) {
 
 async fn sync_all(app: &AppHandle) {
     let s = app.state::<AppState>();
-    if s.syncing.swap(true, Ordering::SeqCst) {
+    if SYNC_BUSY.swap(true, Ordering::SeqCst) {
         return;
     }
+    s.syncing.store(true, Ordering::SeqCst);
     let accounts = lock(&s).and_then(|st| st.list_accounts().map_err(err)).unwrap_or_default();
     let mut arrived = Vec::new();
     for a in &accounts {
@@ -516,6 +714,7 @@ async fn sync_all(app: &AppHandle) {
     activity(app, "index", None);
     calendar_changed(app);
     s.syncing.store(false, Ordering::SeqCst);
+    SYNC_BUSY.store(false, Ordering::SeqCst);
     if !arrived.is_empty() && settings(&s).notify {
         let (title, body) = match arrived.as_slice() {
             [one] => (one.from.clone(), if one.subject.is_empty() { "(no subject)".to_string() } else { one.subject.clone() }),
@@ -1341,67 +1540,17 @@ pub fn run() {
             }
             std::fs::create_dir_all(&dir)?;
             restrict_to_owner(&dir);
-            // Debug builds on Android can't be given environment variables:
-            // the local test server's CA may instead be placed in the data
-            // folder (adb run-as). Release builds never trust it.
-            #[cfg(all(debug_assertions, target_os = "android"))]
-            if std::env::var_os("CARTEIRO_TEST_CA").is_none() && dir.join("test-ca.pem").exists() {
-                std::env::set_var("CARTEIRO_TEST_CA", dir.join("test-ca.pem"));
-            }
-            let store = Store::open(&dir.join("mail.db"))?;
-            for f in ["mail.db", "mail.db-wal", "mail.db-shm"] {
-                restrict_to_owner(&dir.join(f));
-            }
-            store.ensure_local_calendar()?;
-            let scanner = store
-                .get_secret("scanner_config")
-                .ok()
-                .flatten()
-                .and_then(|j| serde_json::from_str(&j).ok())
-                .unwrap_or_default();
-            let mut app_settings: AppSettings = store
-                .get_secret("app_settings")
-                .ok()
-                .flatten()
-                .and_then(|j| serde_json::from_str(&j).ok())
-                .unwrap_or_default();
-            // Settings saved by older versions: the old 3-minute default
-            // becomes the working-hours schedule, once.
-            if app_settings.schedule_version < 1 {
-                let fresh = AppSettings::default();
-                if app_settings.sync_minutes <= 3 {
-                    app_settings.sync_minutes = fresh.sync_minutes;
-                }
-                app_settings.work_days = fresh.work_days;
-                app_settings.work_start = fresh.work_start;
-                app_settings.work_end = fresh.work_end;
-                app_settings.off_hours_minutes = fresh.off_hours_minutes;
-                app_settings.schedule_version = 1;
-                let _ = store.set_secret("app_settings", &serde_json::to_string(&app_settings).unwrap_or_default());
-            }
-            // Sign-in registrations come with the build when none were saved.
-            let built = AppSettings::default();
-            if app_settings.google.client_id.is_empty() {
-                app_settings.google = built.google;
-            }
-            if app_settings.microsoft.client_id.is_empty() {
-                app_settings.microsoft = built.microsoft;
-            }
-            // Mail indexed before attachment contents were searchable: once more.
-            let _ = store.reindex_for_attachments();
-            // Invitations to past meetings used to be skipped: look again, once.
-            let _ = store.recheck_invites_once();
-            // People from mail already here, once (new mail is collected as it arrives).
-            if store.get_secret("contacts_collected").ok().flatten().is_none() {
-                let _ = store.collect_from_stored_mail();
-                let _ = store.set_secret("contacts_collected", "1");
-            }
-            // Private ClamAV engine; keeps its signatures up to date.
-            let clam = Arc::new(clamav::Engine::new(&dir, app.path().resource_dir().ok().as_deref()));
+            let core = core(&dir, app.path().resource_dir().ok().as_deref())?;
+            APP_UP.store(true, Ordering::SeqCst);
+            let (scanner, app_settings) = {
+                let st = core.store.lock().map_err(|_| "database lock poisoned")?;
+                (load_scanner(&st), load_settings(&st))
+            };
+            let clam = core.clam.clone();
             let engine = clam.clone();
             tauri::async_runtime::spawn(async move { engine.run().await });
             app.manage(AppState {
-                store: Arc::new(Mutex::new(store)),
+                store: core.store.clone(),
                 scanner: Mutex::new(scanner),
                 settings: Mutex::new(app_settings),
                 syncing: AtomicBool::new(false),

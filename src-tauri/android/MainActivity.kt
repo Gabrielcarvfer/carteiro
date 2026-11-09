@@ -31,6 +31,8 @@ class MainActivity : TauriActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
+    // Mail checks and notifications while Carteiro is in the background.
+    MailJobService.schedule(this)
     // Edge-to-edge draws the page under the status and navigation bars, and
     // older WebViews don't report those insets to CSS. Pad the content by
     // the system bars, display cutout and keyboard instead, so nothing is

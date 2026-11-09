@@ -391,6 +391,7 @@ dependencies = [
 name = "carteiro"
 version = "0.1.0"
 dependencies = [
+ "jni",
  "keyring",
  "libc",
  "mail-core",

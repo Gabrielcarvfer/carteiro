@@ -418,7 +418,7 @@ impl Engine {
         std::fs::metadata(self.dir.join("updated.stamp")).and_then(|m| m.modified()).ok()
     }
 
-    fn update_due(&self) -> bool {
+    pub fn update_due(&self) -> bool {
         !self.has_db() || self.last_update().and_then(|t| t.elapsed().ok()).is_none_or(|age| age >= UPDATE_EVERY)
     }
 
@@ -432,7 +432,7 @@ impl Engine {
             if !self.update_due() {
                 // Signatures are recent: start straight away, no download.
                 if self.addr().is_none() {
-                    if let Err(e) = self.start_clamd().await {
+                    if let Err(e) = self.start_or_repair().await {
                         self.set("error", e);
                     }
                 }
@@ -445,7 +445,7 @@ impl Engine {
                     let running = self.addr().is_some();
                     if changed || !running {
                         self.stop_clamd().await;
-                        if let Err(e) = self.start_clamd().await {
+                        if let Err(e) = self.start_or_repair().await {
                             self.set("error", e);
                         }
                     }
@@ -457,11 +457,52 @@ impl Engine {
         }
     }
 
+    /// Starts clamd if it isn't running (no signature download).
+    pub async fn ensure_running(&self) -> Result<(), String> {
+        if self.addr().is_some() {
+            return Ok(());
+        }
+        if !self.has_db() {
+            self.update().await?;
+        }
+        self.start_or_repair().await
+    }
+
+    /// Starts clamd; if a signature file is broken (a download cut short,
+    /// e.g. the app was killed meanwhile), deletes it, downloads it again
+    /// and tries once more.
+    async fn start_or_repair(&self) -> Result<(), String> {
+        match self.start_clamd().await {
+            Err(e) if e.contains("Broken or not a CVD") || e.contains("Malformed database") || e.contains("Can't load") => {
+                let mut removed = false;
+                for word in e.split_whitespace() {
+                    let path = Path::new(word.trim_end_matches(':'));
+                    if path.starts_with(self.db_dir()) && path.is_file() {
+                        removed |= std::fs::remove_file(path).is_ok();
+                    }
+                }
+                if !removed {
+                    return Err(e);
+                }
+                self.set("updating", "Repairing virus signatures…");
+                self.update().await?;
+                self.start_clamd().await
+            }
+            r => r,
+        }
+    }
+
+    /// Stops clamd (the background job, when the app isn't open).
+    pub async fn stop(&self) {
+        self.stop_clamd().await;
+        self.set("stopped", "");
+    }
+
     /// "Update now" from Settings.
     pub async fn update_now(&self) -> Result<Status, String> {
         if self.update().await? || self.addr().is_none() {
             self.stop_clamd().await;
-            self.start_clamd().await?;
+            self.start_or_repair().await?;
         }
         Ok(self.status())
     }
