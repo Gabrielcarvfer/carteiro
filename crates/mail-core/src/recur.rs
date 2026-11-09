@@ -164,18 +164,24 @@ pub fn expand(e: &Event, from: i64, to: i64, limit: usize) -> Vec<Event> {
 /// [from, to): changed instances (RECURRENCE-ID) replace the ones they stand
 /// for, and cancelled ones are dropped. At most `limit` per series.
 pub fn expand_all(events: Vec<Event>, from: i64, to: i64, limit: usize) -> Vec<Event> {
+    expand_all_with(events, from, to, limit, false)
+}
+
+/// `expand_all`, keeping cancelled series and dates (marked `cancelled`)
+/// when `keep_cancelled`: invitations keep their history.
+pub fn expand_all_with(events: Vec<Event>, from: i64, to: i64, limit: usize, keep_cancelled: bool) -> Vec<Event> {
     let (overrides, masters): (Vec<Event>, Vec<Event>) = events.into_iter().partition(|e| e.recurrence_id.is_some());
     let replaced = |uid: &str, start: i64| {
         overrides.iter().any(|o| o.uid == uid && o.recurrence_id.is_some_and(|r| r == start || r.div_euclid(86400) == start.div_euclid(86400)))
     };
     let mut out: Vec<Event> = Vec::new();
     for m in &masters {
-        if m.cancelled {
+        if m.cancelled && !keep_cancelled {
             continue;
         }
         out.extend(expand(m, from, to, limit).into_iter().filter(|i| m.uid.is_empty() || m.rrule.is_empty() || !replaced(&m.uid, i.start)));
     }
-    out.extend(overrides.iter().filter(|o| !o.cancelled && o.end > from && o.start < to).cloned());
+    out.extend(overrides.iter().filter(|o| (keep_cancelled || !o.cancelled) && o.end > from && o.start < to).cloned());
     out
 }
 

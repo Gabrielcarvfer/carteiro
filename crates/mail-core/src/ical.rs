@@ -37,7 +37,8 @@ pub struct Event {
     pub recurrence_id: Option<i64>,
     #[serde(skip)]
     pub sequence: i64,
-    #[serde(skip)]
+    /// Cancelled (STATUS:CANCELLED, or by a later cancellation): kept, shown
+    /// as cancelled.
     pub cancelled: bool,
     /// The organizer's address (ORGANIZER:mailto:…), lower-case.
     #[serde(skip)]

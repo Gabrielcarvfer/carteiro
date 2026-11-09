@@ -70,6 +70,7 @@ let events = [
   { id: 9, calendar_id: 1, title: "Flight to Porto", start: day0 + 4 * 86400 + 8.6 * 3600, end: day0 + 4 * 86400 + 9.6 * 3600, all_day: false, floating: false, recurring: false, location: "Gate B12", description: "" },
   { id: 10, calendar_id: 2, title: "Sprint demo", start: day0 - 2 * 86400 + 15 * 3600, end: day0 - 2 * 86400 + 16 * 3600, all_day: false, floating: false, recurring: false, location: "", description: "" },
   ...[0, 7, 14, 21].map((d, i) => ({ id: 200 + i, calendar_id: 3, remote_id: "weekly-1", title: "Weekly design review", start: day0 + (d + 1) * 86400 + 10 * 3600, end: day0 + (d + 1) * 86400 + 11 * 3600, all_day: false, floating: false, recurring: true, location: "Room 3", description: "", rsvp: "" })),
+  { id: 11, calendar_id: 3, remote_id: "offsite-1", title: "Team offsite", start: day0 + 86400 + 9 * 3600, end: day0 + 86400 + 17 * 3600, all_day: false, floating: false, recurring: false, location: "", description: "", rsvp: "", cancelled: true },
   { id: 5, calendar_id: 2, title: "Design sync", start: day0 + 11.5 * 3600, end: day0 + 13 * 3600, all_day: false, floating: false, recurring: false, location: "", description: "" },
 ];
 

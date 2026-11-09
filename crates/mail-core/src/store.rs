@@ -441,6 +441,12 @@ impl Store {
         if conn.prepare("SELECT organizer FROM invite_series LIMIT 0").is_err() {
             conn.execute_batch("ALTER TABLE invite_series ADD COLUMN organizer TEXT NOT NULL DEFAULT ''; ALTER TABLE invite_series ADD COLUMN account_id INTEGER;")?;
         }
+        if conn.prepare("SELECT cancelled FROM events LIMIT 0").is_err() {
+            conn.execute_batch("ALTER TABLE events ADD COLUMN cancelled INTEGER NOT NULL DEFAULT 0")?;
+        }
+        if conn.prepare("SELECT outcome FROM invite_msgs LIMIT 0").is_err() {
+            conn.execute_batch("ALTER TABLE invite_msgs ADD COLUMN outcome TEXT NOT NULL DEFAULT ''")?;
+        }
         if conn.prepare("SELECT rsvp FROM events LIMIT 0").is_err() {
             conn.execute_batch("ALTER TABLE events ADD COLUMN rsvp TEXT NOT NULL DEFAULT ''")?;
         }
@@ -1399,8 +1405,8 @@ impl Store {
             .conn
             .query_row("SELECT sender, sequence, rsvp, removed FROM invite_series WHERE uid = ?1", [uid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
             .optional()?;
-        if let Some((owner, seq, _, _)) = &existing {
-            if *owner != sender || (*seq > sequence && !by_hand) {
+        if let Some((_, seq, _, _)) = &existing {
+            if !self.may_change_invite(uid, &sender, organizer)? || (*seq > sequence && !by_hand) {
                 return Ok(false);
             }
         }
@@ -1416,9 +1422,9 @@ impl Store {
         tx.execute("DELETE FROM events WHERE calendar_id = ?1 AND remote_id = ?2", params![cal, uid])?;
         for e in instances.iter().filter(|e| !removed.iter().any(|&(a, b)| e.start >= a && e.start < b)) {
             tx.execute(
-                "INSERT INTO events (calendar_id, remote_id, uid, title, location, description, start, end, all_day, floating, recurring, tzid, rsvp)
-                 VALUES (?1, ?2, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-                params![cal, uid, e.title, e.location, e.description, e.start, e.end, e.all_day, e.floating, e.recurring, e.tzid, answers.get(&e.start).unwrap_or(&rsvp)],
+                "INSERT INTO events (calendar_id, remote_id, uid, title, location, description, start, end, all_day, floating, recurring, tzid, rsvp, cancelled)
+                 VALUES (?1, ?2, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                params![cal, uid, e.title, e.location, e.description, e.start, e.end, e.all_day, e.floating, e.recurring, e.tzid, answers.get(&e.start).unwrap_or(&rsvp), e.cancelled],
             )?;
         }
         tx.execute(
@@ -1432,20 +1438,35 @@ impl Store {
         Ok(true)
     }
 
-    /// A cancellation from the original sender: the whole series, or one
-    /// instance (by the start it had).
-    pub fn cancel_invite(&self, uid: &str, sender: &str, instance: Option<i64>) -> Result<bool> {
-        let owner: Option<String> = self.conn.query_row("SELECT sender FROM invite_series WHERE uid = ?1", [uid], |r| r.get(0)).optional()?;
-        if owner.as_deref() != Some(sender.to_lowercase().as_str()) {
+    /// Whether `sender` may change the series `uid`: it's new, or they sent it
+    /// first, or they're its organizer, or it's the same organizer's meeting.
+    pub fn may_change_invite(&self, uid: &str, sender: &str, organizer: &str) -> Result<bool> {
+        let row: Option<(String, String)> =
+            self.conn.query_row("SELECT sender, organizer FROM invite_series WHERE uid = ?1", [uid], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
+        let (sender, organizer) = (sender.to_lowercase(), organizer.to_lowercase());
+        Ok(match row {
+            None => true,
+            Some((owner, known)) => owner == sender || (!known.is_empty() && (known == sender || known == organizer)),
+        })
+    }
+
+    pub fn invite_exists(&self, uid: &str) -> Result<bool> {
+        Ok(self.conn.query_row("SELECT EXISTS(SELECT 1 FROM invite_series WHERE uid = ?1)", [uid], |r| r.get(0))?)
+    }
+
+    /// A cancellation: the whole series, or one date (by the start it had),
+    /// is marked cancelled; nothing is deleted. Only by whoever may change it.
+    pub fn cancel_invite(&self, uid: &str, sender: &str, organizer: &str, instance: Option<i64>) -> Result<bool> {
+        if !self.invite_exists(uid)? || !self.may_change_invite(uid, sender, organizer)? {
             return Ok(false);
         }
         let cal = self.invitations_calendar()?;
         match instance {
             Some(t) => self.conn.execute(
-                "DELETE FROM events WHERE calendar_id = ?1 AND remote_id = ?2 AND (start = ?3 OR start / 86400 = ?3 / 86400)",
+                "UPDATE events SET cancelled = 1 WHERE calendar_id = ?1 AND remote_id = ?2 AND (start = ?3 OR start / 86400 = ?3 / 86400)",
                 params![cal, uid, t],
             )?,
-            None => self.conn.execute("DELETE FROM events WHERE calendar_id = ?1 AND remote_id = ?2", params![cal, uid])?,
+            None => self.conn.execute("UPDATE events SET cancelled = 1 WHERE calendar_id = ?1 AND remote_id = ?2", params![cal, uid])?,
         };
         Ok(true)
     }
@@ -1518,13 +1539,13 @@ impl Store {
     /// Invitation checks from before past meetings were kept are done again
     /// (once): those messages' invitations go into the calendar now.
     pub fn recheck_invites_once(&self) -> Result<usize> {
-        if self.get_secret("invites_version")?.as_deref() == Some("2") {
+        if self.get_secret("invites_version")?.as_deref() == Some("3") {
             return Ok(0);
         }
         let n = self.conn.execute("DELETE FROM invite_msgs", [])?;
         // Messages already indexed are looked at again by the indexer.
         self.conn.execute("DELETE FROM msg_text WHERE status = 'clean' AND msg IN (SELECT id FROM messages WHERE att_types LIKE '% ics %')", [])?;
-        self.set_secret("invites_version", "2")?;
+        self.set_secret("invites_version", "3")?;
         Ok(n)
     }
 
@@ -1532,9 +1553,27 @@ impl Store {
         Ok(self.conn.query_row("SELECT EXISTS(SELECT 1 FROM invite_msgs WHERE msg = ?1)", [msg], |r| r.get(0))?)
     }
 
-    pub fn mark_invites(&self, msg: i64, uids: &[String]) -> Result<()> {
-        self.conn.execute("INSERT OR REPLACE INTO invite_msgs (msg, uids) VALUES (?1, ?2)", params![msg, serde_json::to_string(uids)?])?;
+    pub fn mark_invites(&self, msg: i64, uids: &[String], outcome: &str) -> Result<()> {
+        self.conn.execute("INSERT OR REPLACE INTO invite_msgs (msg, uids, outcome) VALUES (?1, ?2, ?3)", params![msg, serde_json::to_string(uids)?, outcome])?;
         Ok(())
+    }
+
+    /// How the messages carrying calendar files fared: outcome -> count, plus
+    /// "waiting" (on the device, not checked yet: ClamAV first) and "not
+    /// downloaded" (content not on the device).
+    pub fn invite_stats(&self) -> Result<Vec<(String, i64)>> {
+        let mut out: Vec<(String, i64)> = self
+            .conn
+            .prepare("SELECT CASE WHEN outcome = '' THEN 'checked before' ELSE outcome END, COUNT(*) FROM invite_msgs GROUP BY 1")?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        let waiting: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM messages WHERE att_types LIKE '% ics %' AND raw IS NOT NULL AND id NOT IN (SELECT msg FROM invite_msgs)",
+            [],
+            |r| r.get(0),
+        )?;
+        out.push(("waiting for ClamAV".into(), waiting));
+        Ok(out)
     }
 
     /// The invitations a message brought, each as its next (or last) instance.
@@ -1723,6 +1762,7 @@ impl Store {
                 floating: r.get(11)?,
                 tzid: r.get(13)?,
                 recurring: r.get(12)?,
+                cancelled: r.get(15)?,
                 ..Default::default()
             },
             rsvp: r.get(14)?,
@@ -1730,7 +1770,7 @@ impl Store {
     }
 
     const EVENT_COLS: &'static str =
-        "e.id, e.calendar_id, e.remote_id, e.etag, e.uid, e.title, e.location, e.description, e.start, e.end, e.all_day, e.floating, e.recurring, e.tzid, e.rsvp";
+        "e.id, e.calendar_id, e.remote_id, e.etag, e.uid, e.title, e.location, e.description, e.start, e.end, e.all_day, e.floating, e.recurring, e.tzid, e.rsvp, e.cancelled";
 
     /// Events of visible calendars overlapping [from, to), by start time.
     pub fn events_between(&self, from: i64, to: i64) -> Result<Vec<StoredEvent>> {

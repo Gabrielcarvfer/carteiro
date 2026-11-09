@@ -227,6 +227,14 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 860, false], ["phone", 39
   });
 
   await page(w, h, mobile);
+  await test("cancelled meetings stay, struck through", async () => {
+    await click("[data-mode=calendar]"); await sleep(900);
+    const el = `[...document.querySelectorAll("#calendar [data-click=cal-open]")].find((b) => b.textContent.includes("Team offsite"))`;
+    expect(await js(`${el}?.classList.contains("cancelled")`), "not shown as cancelled");
+    await js(`${el}.click()`); await sleep(400);
+    expect(await js(`document.querySelector("#modal .cancelled-tag")?.textContent`) === "Cancelled", "editor doesn't say cancelled");
+    await click("#modal [data-click=cal-close]"); await sleep(200);
+  });
   await test("small month marks days with events", async () => {
     await click("[data-mode=calendar]"); await sleep(1000);
     expect(await js(`document.querySelectorAll(".mini-grid .busy").length`) > 0, "no marked days");

@@ -123,11 +123,12 @@ function range() {
 }
 
 // Your own answer to an event, shown on it: declined ones fade out.
-const rsvpClass = (e) => (e.rsvp ? `rsvp-${e.rsvp}` : "");
+const rsvpClass = (e) => (e.cancelled ? "cancelled" : e.rsvp ? `rsvp-${e.rsvp}` : "");
 export const RSVP = [["yes", "Going"], ["maybe", "Maybe"], ["no", "Not going"]];
 /// Your answer; for invitations also a button that sends it to the organizer
 /// (picking an answer alone tells nobody).
 export function rsvpButtons(e, invitation = isInvitation(e)) {
+  if (e.cancelled) return html`<span class="cancelled-tag">Cancelled</span>`;
   return html`<div class="rsvp-row"><div class="rsvp" role="group" aria-label="Your answer">
     ${RSVP.map(([v, l]) => html`<button class="btn ${e.rsvp === v ? "on" : ""}" data-click="rsvp" data-id="${e.id}" data-v="${v}" aria-pressed="${e.rsvp === v}">${l}</button>`)}
   </div>${invitation ? html`<button class="btn primary send-rsvp" data-click="send-rsvp" data-id="${e.id}" ${e.rsvp ? "" : "disabled"} title="Send your answer for this date to the organizer">Send answer</button>` : ""}</div>`;

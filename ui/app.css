@@ -556,3 +556,7 @@ h3.sect { font-size: 15px; margin: 18px 0 4px; }
 .card:not(.collapsed) .msg-head { padding-bottom: 30px; }
 .scan-slot { position: absolute; right: 14px; bottom: 8px; }
 .toolbar select.move { min-width: 0; max-width: 38%; }
+
+/* cancelled meetings are kept, struck through */
+.cancelled { text-decoration: line-through; opacity: 0.55; }
+.cancelled-tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: 600; color: var(--danger); border: 1px solid var(--danger); text-decoration: none; }

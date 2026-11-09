@@ -1017,6 +1017,12 @@ async fn send_rsvp(state: State<'_, AppState>, event_id: i64) -> Res<ops::SendRe
     ops::send_rsvp(&s.store, &account, &cred, event_id).await.map_err(err)
 }
 
+/// How messages carrying calendar files fared (counts per outcome).
+#[tauri::command]
+fn invite_stats(state: State<'_, AppState>) -> Res<Vec<(String, i64)>> {
+    lock(&state)?.invite_stats().map_err(err)
+}
+
 /// Removes dates of a repeating event laid out on this device (invitations):
 /// those starting in [from, to), or all of them when both are absent.
 #[tauri::command]
@@ -1652,6 +1658,7 @@ pub fn run() {
             preview_ics,
             add_ics,
             remove_series,
+            invite_stats,
             send_rsvp,
             set_utc_offset,
             restore_upload,
