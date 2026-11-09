@@ -1116,6 +1116,15 @@ impl Store {
     }
 
     /// Downloaded messages whose text hasn't been scanned for indexing yet.
+    /// How many downloaded messages wait to be scanned and indexed.
+    pub fn count_unindexed(&self) -> Result<usize> {
+        Ok(self.conn.query_row(
+            "SELECT COUNT(*) FROM messages m LEFT JOIN msg_text t ON t.msg = m.id WHERE m.raw IS NOT NULL AND t.msg IS NULL",
+            [],
+            |r| r.get::<_, i64>(0),
+        )? as usize)
+    }
+
     /// Messages to scan and index, each whole: its stored attachments are
     /// put back in (the `raw` column alone lacks them).
     pub fn unindexed(&self, limit: u32) -> Result<Vec<(i64, Vec<u8>)>> {

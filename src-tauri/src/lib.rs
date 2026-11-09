@@ -683,6 +683,19 @@ fn activity(app: &AppHandle, key: &str, label: Option<String>) {
     let _ = app.emit("activity", serde_json::json!({ "key": key, "label": label }));
 }
 
+/// Checks downloaded mail with ClamAV and indexes it, showing how many are left.
+async fn index_with_activity(app: &AppHandle, s: &AppState) {
+    let progress = |done: usize, left: usize| {
+        if done > 0 || left > 25 {
+            activity(app, "index", Some(format!("Checking mail with ClamAV and indexing it for search: {left} left")));
+        } else {
+            activity(app, "index", Some("Checking new mail with ClamAV and indexing it for search".into()));
+        }
+    };
+    let _ = ops::index_clean_text_with(&s.store, &scanner(s), &progress).await;
+    activity(app, "index", None);
+}
+
 async fn sync_all(app: &AppHandle) {
     let s = app.state::<AppState>();
     if SYNC_BUSY.swap(true, Ordering::SeqCst) {
@@ -709,9 +722,7 @@ async fn sync_all(app: &AppHandle) {
         let _ = offline_all(app, &s).await;
     }
     // Content search covers only mail the virus scanner found clean.
-    activity(app, "index", Some("Checking new mail with ClamAV and indexing it for search".into()));
-    let _ = ops::index_clean_text(&s.store, &scanner(&s)).await;
-    activity(app, "index", None);
+    index_with_activity(app, &s).await;
     calendar_changed(app);
     s.syncing.store(false, Ordering::SeqCst);
     SYNC_BUSY.store(false, Ordering::SeqCst);
@@ -1644,9 +1655,7 @@ pub fn run() {
                     if now && !ready {
                         let _ = handle.emit("scanner-ready", ());
                         let s = handle.state::<AppState>();
-                        activity(&handle, "index", Some("Checking mail with ClamAV and indexing it for search".into()));
-                        let _ = ops::index_clean_text(&s.store, &crate::scanner(&s)).await;
-                        activity(&handle, "index", None);
+                        index_with_activity(&handle, &s).await;
                         calendar_changed(&handle);
                     }
                     ready = now;

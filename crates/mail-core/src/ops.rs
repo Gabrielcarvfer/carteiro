@@ -250,12 +250,19 @@ fn search_text(store: &Mutex<Store>, raw: &[u8]) -> String {
 /// Stops when the scanner isn't available (retried on the next sync).
 /// Returns how many messages were processed.
 pub async fn index_clean_text(store: &Mutex<Store>, scanner: &ScannerConfig) -> Result<usize> {
+    index_clean_text_with(store, scanner, &|_, _| {}).await
+}
+
+/// `index_clean_text`, telling `progress(done, left)` before each batch.
+pub async fn index_clean_text_with(store: &Mutex<Store>, scanner: &ScannerConfig, progress: &(dyn Fn(usize, usize) + Send + Sync)) -> Result<usize> {
     let mut done = 0;
     loop {
+        let left = lock(store)?.count_unindexed()?;
         let batch = lock(store)?.unindexed(25)?;
         if batch.is_empty() {
             return Ok(done);
         }
+        progress(done, left);
         for (id, raw) in batch {
             match scan::scan_cached(store, scanner, &raw).await {
                 Verdict::Clean => on_clean(store, id, &raw)?,

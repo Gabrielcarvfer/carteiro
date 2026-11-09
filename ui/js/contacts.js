@@ -6,7 +6,7 @@
 import { api } from "./api.js";
 import { $, ask, html, on, put } from "./dom.js";
 import { avatar, icon } from "./format.js";
-import { syncLayer, toast } from "./app.js";
+import { activityButton, syncLayer, toast } from "./app.js";
 import { openCompose } from "./dialogs.js";
 
 const K = { query: "", list: [], sources: [], selected: null, jumper: false };
@@ -79,6 +79,7 @@ function render() {
       <header class="ct-bar">
         <h2>Contacts</h2>
         <span class="spacer"></span>
+        ${activityButton()}
         <button class="icon-btn" title="Sync address books" data-click="ct-sync">${icon("sync")}</button>
         <button class="icon-btn" title="Address books" data-click="ct-books">${icon("calendar")}</button>
         <button class="btn" data-click="ct-import">Import</button>

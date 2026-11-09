@@ -22,7 +22,7 @@ The left rail (the bottom bar on phones) switches between **Mail**, **Calendar**
   Opening a conversation from a search opens the messages that matched, marked *Matches your search*, scrolls to the newest of them and highlights the attachments the search was about.
 - **Rules:** the Rules button (or *Create rule…* on a message) moves, flags or marks incoming mail by sender, recipient, subject or words, in the order you set. *Run rules on this folder now* applies them to mail already there.
 - **Images and safety:** remote images stay blocked until you choose *Load images*, and even then trackers stay blocked. A badge on each message says whether ClamAV has checked it; attachments can be saved only once they pass.
-- **What's running:** while Carteiro works in the background (checking mail, updating calendars and contacts, checking mail with ClamAV and indexing it, opening a large conversation, saving an attachment), a small box at the bottom says so.
+- **What's running:** while Carteiro works in the background, a small spinner shows in the header; tap it to see what's running (checking mail, updating calendars and contacts, checking mail with ClamAV and indexing it, with how many are left; downloading for offline use, with a progress bar; opening a large conversation; saving an attachment).
 - **Saved files:** attachments and exports go to **Downloads/Carteiro**, named with your local date and time.
 
 ## Calendar
@@ -72,7 +72,7 @@ Settings has four sections side by side: swipe sideways (or tap a title, or use 
 
 - **general:** your accounts; text size (Small to Larger); when to check for mail (every 15 minutes during working hours by default, Monday to Friday 08:00–18:00, and hourly outside them, or only when you ask); notifications; keeping Carteiro in the tray; the first day of the week.
 - **security & privacy:** turn ClamAV on or off, update its signatures (they're updated weekly by themselves; mail is checked again with new signatures when you open it), or use your own `clamd`; refresh the tracker list (it also updates daily).
-- **your data:** how much mail to keep offline (from the last day to all of it; *Download now* runs in the background, with a progress bar at the bottom of the window); backups (below); save all mail as `.mbox`; export or import your settings (passwords are never included).
+- **your data:** how much mail to keep offline (from the last day to all of it; *Download now* runs in the background: tap the header's spinner to see its progress); backups (below); save all mail as `.mbox`; export or import your settings (passwords are never included).
 - **about:** updates (turn off automatic installation, check now, or install now), the version, and the licenses of the bundled software.
 
 The sun/moon button switches between light and dark.

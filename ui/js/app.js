@@ -115,6 +115,7 @@ function layoutState() {
   app.classList.toggle("drawer-open", S.drawer);
   // Nothing to compose from until an account exists.
   app.classList.toggle("no-accounts", !S.accounts.length);
+  spinPhase();
   for (const b of document.querySelectorAll("[data-click=sync]")) b.classList.toggle("spin", S.syncing);
 }
 
@@ -1266,15 +1267,47 @@ $("#threads").addEventListener("scroll", (e) => {
 // (opening a conversation, saving an attachment) once they take over 300 ms.
 const tasks = new Map();
 const taskTimers = new Map();
+let activityOpen = false;
+// A spinner in the header while anything runs; tapping it lists what.
 function renderTasks() {
-  const box = $("#activity");
-  box.hidden = tasks.size === 0;
-  put(box, html`<span class="spinner" aria-hidden="true"></span><div class="activity-list">${[...tasks.values()].map((l) => html`<div>${l}</div>`)}</div>`);
+  spinPhase();
+  for (const b of document.querySelectorAll("[data-click=activity]")) {
+    b.hidden = tasks.size === 0;
+    b.setAttribute("aria-expanded", activityOpen && tasks.size > 0);
+  }
+  if (!tasks.size) activityOpen = false;
+  const panel = $("#activity");
+  panel.hidden = !activityOpen;
+  if (!activityOpen) return;
+  const btn = [...document.querySelectorAll("[data-click=activity]")].find((b) => b.offsetParent);
+  const r = btn?.getBoundingClientRect();
+  // Under the spinner, opening towards the middle of the screen.
+  if (r) {
+    const left = r.left + r.width / 2 < innerWidth / 2;
+    Object.assign(panel.style, { top: `${r.bottom + 6}px`, left: left ? `${Math.max(8, r.left)}px` : "", right: left ? "" : `${Math.max(8, innerWidth - r.right)}px` });
+  }
+  put(panel, html`<h4>Running now</h4>${[...tasks.values()].map((t) => html`<div class="task">
+      <span class="spinner" aria-hidden="true"></span><div><div>${t.label ?? t}</div>
+      ${t.total ? html`<div class="progress-track"><div style="width:${Math.round((t.done / t.total) * 100)}%"></div></div>` : ""}</div></div>`)}`);
 }
-export function task(key, label) {
+/** The header's spinner button, for screens that draw their own header. */
+export function activityButton() {
+  return html`<button class="icon-btn activity-btn" title="What's running" aria-label="What's running in the background" aria-expanded="${activityOpen}" data-click="activity" ${tasks.size ? "" : "hidden"}><span class="spinner"></span></button>`;
+}
+on("click", "activity", () => { activityOpen = !activityOpen; renderTasks(); });
+document.addEventListener("click", (e) => {
+  if (activityOpen && !e.target.closest?.("#activity, [data-click=activity]")) { activityOpen = false; renderTasks(); }
+});
+/// Spinners rotate in step with the clock, so one redrawn mid-turn (the
+/// calendar redraws while syncing) carries on instead of starting over.
+export function spinPhase() {
+  document.documentElement.style.setProperty("--spin-phase", `-${Math.round(performance.now() % 1200)}ms`);
+}
+/// Shows (or with no label, ends) a running task; `progress` = {done, total}.
+export function task(key, label, progress = null) {
   clearTimeout(taskTimers.get(key));
   taskTimers.delete(key);
-  if (label) tasks.set(key, label); else tasks.delete(key);
+  if (label) tasks.set(key, { label, ...(progress ?? {}) }); else tasks.delete(key);
   renderTasks();
 }
 /** Runs `work`, showing `label` if it takes more than a moment. */
@@ -1290,16 +1323,11 @@ api.scannerStatus().then((st) => { if (st?.state && st.state !== "ready" && st.s
 // ---- offline download progress ---------------------------------------------------
 
 listen("offline-progress", (p) => {
-  const bar = $("#progress");
-  bar.hidden = false;
-  const pct = p.total ? Math.round((p.done / p.total) * 100) : 0;
   const what = p.phase === "listing" ? "Finding older mail" : "Downloading mail for offline use";
-  put(bar, html`<div class="progress-text"><strong>${what}</strong> · ${p.folder} · ${p.account}
-      <span class="muted">${p.done.toLocaleString()} of ${p.total.toLocaleString()}</span></div>
-    <div class="progress-track" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100"><div style="width:${pct}%"></div></div>`);
+  task("bg:offline", `${what}: ${p.folder} (${p.account}), ${p.done.toLocaleString()} of ${p.total.toLocaleString()}`, { done: p.done, total: p.total });
 });
 listen("offline-done", (r) => {
-  $("#progress").hidden = true;
+  task("bg:offline", null);
   if (r?.error) toast(`Offline download stopped: ${r.error}`);
   else if (r?.report && (r.report.downloaded || r.report.listed)) toast(`Offline copy updated: ${r.report.downloaded.toLocaleString()} downloaded, ${r.report.listed.toLocaleString()} older messages listed`);
   refreshThreads();

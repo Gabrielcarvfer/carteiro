@@ -4,7 +4,7 @@
 import { api } from "./api.js";
 import { $, ask, choose, html, on, put, raw } from "./dom.js";
 import { icon } from "./format.js";
-import { closeDrawer, showMessage, toast } from "./app.js";
+import { activityButton, closeDrawer, showMessage, spinPhase, toast } from "./app.js";
 
 const C = {
   view: null, // "day" | "week" | "month" | "agenda"
@@ -212,6 +212,7 @@ function title() {
 }
 
 function render() {
+  spinPhase();
   if (narrow() && C.view === "week") C.view = "day"; // 7 columns don't fit a phone
   const views = narrow() ? [["agenda", "Agenda"], ["day", "Day"], ["month", "Month"]] : [["day", "Day"], ["week", "Week"], ["month", "Month"], ["agenda", "Agenda"]];
   put("#calendar", html`
@@ -229,6 +230,7 @@ function render() {
         <button class="icon-btn" aria-label="Next" data-click="cal-next">${icon("chevron")}</button>
         <h2 class="cal-title ellipsis">${title()}</h2>
         <div class="seg">${views.map(([v, l]) => html`<button class="${C.view === v ? "on" : ""}" data-click="cal-view" data-view="${v}">${l}</button>`)}</div>
+        ${activityButton()}
         <button class="icon-btn ${C.syncing ? "spin" : ""}" title="Sync calendars" data-click="cal-sync">${icon("sync")}</button>
         <input class="cal-search" type="search" placeholder="Search events" aria-label="Search events" data-input="cal-search" value="${C.query}" />
       </header>

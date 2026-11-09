@@ -207,9 +207,12 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 860, false], ["phone", 39
     await js(`${chip}.click()`); await sleep(50);
     expect(await js(`${chip}.classList.contains("busy") && ${chip}.textContent.includes("checking and saving")`), "no feedback while saving");
     await js(`${chip}.click()`); await sleep(320);
-    expect(/agenda\.pdf/.test(await js(`document.querySelector("#activity:not([hidden])")?.textContent ?? ""`)), "background task not shown while saving");
+    const spinner = `[...document.querySelectorAll("[data-click=activity]")].find((b) => b.offsetParent)`;
+    expect(await js(`!!${spinner}`), "no spinner while saving");
+    await js(`${spinner}.click()`); await sleep(50);
+    expect(/agenda\.pdf/.test(await js(`document.querySelector("#activity:not([hidden])")?.textContent ?? ""`)), "the panel doesn't list the task");
     await sleep(350);
-    expect(await js(`document.querySelector("#activity").hidden`), "task stayed after it ended");
+    expect(await js(`!${spinner} && document.querySelector("#activity").hidden`), "spinner or panel stayed after the task ended");
     expect(await js(`window.__saves`) === 1, `saved ${await js("window.__saves")} times`);
     expect(await js(`${chip}.textContent.includes("saved")`), "not shown as saved");
     await js(`${chip}.click()`); await sleep(200);
