@@ -450,7 +450,17 @@ impl Store {
         if conn.prepare("SELECT rsvp FROM events LIMIT 0").is_err() {
             conn.execute_batch("ALTER TABLE events ADD COLUMN rsvp TEXT NOT NULL DEFAULT ''")?;
         }
+        // Ids folded across lines by their sender were stored with the line
+        // break; such a conversation couldn't be opened (see clean_id).
+        const WS: &str = "replace(replace(replace(replace(X, char(13), ''), char(10), ''), char(9), ''), ' ', '')";
+        for (table, col) in [("messages", "message_id"), ("messages", "thread_key"), ("msg_refs", "ref_id")] {
+            conn.execute(
+                &format!("UPDATE {table} SET {col} = {} WHERE {col} GLOB '*[' || char(9, 10, 13, 32) || ']*'", WS.replace('X', col)),
+                [],
+            )?;
+        }
         let store = Self { conn };
+        store.drop_collected_robots()?;
         if new_att_types {
             // Messages already here: read their attachment types once.
             let ids: Vec<i64> = store
@@ -1023,6 +1033,24 @@ impl Store {
         }
         tx.commit()?;
         Ok(report)
+    }
+
+    /// Drops collected contacts none of whose addresses look like a person
+    /// (mailing lists and robots gathered before they were recognized).
+    pub fn drop_collected_robots(&self) -> Result<usize> {
+        let rows: Vec<(i64, String)> = self
+            .conn
+            .prepare("SELECT c.id, c.data FROM contacts c JOIN contact_sources s ON s.id = c.source_id WHERE s.kind = 'collected'")?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        let mut dropped = 0;
+        for (id, data) in rows {
+            let Ok(c) = serde_json::from_str::<crate::contacts::Contact>(&data) else { continue };
+            if !c.emails.iter().any(|e| crate::contacts::is_person_address(e)) {
+                dropped += self.conn.execute("DELETE FROM contacts WHERE id = ?1", [id])?;
+            }
+        }
+        Ok(dropped)
     }
 
     /// The "From your mail" address book (created on first use).
@@ -2014,6 +2042,82 @@ mod tests {
 
     fn key_of(s: &Store, id: i64) -> String {
         s.message(id).unwrap().unwrap().thread_key
+    }
+
+    // A conversation key must come back from the page exactly as sent: the
+    // page turns CR LF into LF, so a key with a line break couldn't be opened.
+    #[test]
+    fn folded_ids_thread_and_open() {
+        let (s, a) = store_with_account();
+        let raw = b"Message-ID: <AEE.1.H?=\r\n =?UTF-8?Q?mail.jo=5Fdoe@example.net>\r\nFrom: Jo <jo@example.net>\r\nSubject: Hello\r\n\r\nhi\r\n";
+        let first = insert(&s, a, 1, crate::message::parse_meta(raw));
+        let key = key_of(&s, first);
+        assert!(!key.chars().any(char::is_whitespace), "{key:?}");
+        // What the page sends back after an HTML round trip.
+        assert_eq!(s.thread_messages(a, &key.replace("\r\n", "\n")).unwrap().len(), 1);
+        // A reply that refers to the folded id (folded differently) joins it.
+        let reply = b"Message-ID: <re@x>\r\nIn-Reply-To:\r\n <AEE.1.H?=\r\n\t=?UTF-8?Q?mail.jo=5Fdoe@example.net>\r\nFrom: me@x.org\r\nSubject: Re: Hello\r\n\r\nok\r\n";
+        let second = insert(&s, a, 2, crate::message::parse_meta(reply));
+        assert_eq!(key_of(&s, second), key);
+        assert_eq!(s.thread_messages(a, &key).unwrap().len(), 2);
+    }
+
+    // Databases from before the fix hold keys with line breaks; opening one
+    // cleans them, and the conversation opens again.
+    #[test]
+    fn opening_cleans_stored_folded_ids() {
+        let dir = std::env::temp_dir().join(format!("carteiro-fold-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("mail.db");
+        let (id, a) = {
+            let s = Store::open(&path).unwrap();
+            let (s0, _) = store_with_account();
+            let mut acct = s0.list_accounts().unwrap().remove(0);
+            acct.id = 0;
+            s.add_account(&mut acct).unwrap();
+            let id = insert(&s, acct.id, 1, meta("ok@x", &[], "Hi", 100));
+            // As the old version stored it.
+            s.conn.execute("UPDATE messages SET message_id = 'a.H?=\r\n =?Q?b@v', thread_key = 'a.H?=\r\n =?Q?b@v' WHERE id = ?1", [id]).unwrap();
+            s.conn.execute("INSERT INTO msg_refs (msg, ref_id) VALUES (?1, 'r\r\n\t@v')", [id]).unwrap();
+            (id, acct.id)
+        };
+        let s = Store::open(&path).unwrap();
+        let m = s.message(id).unwrap().unwrap();
+        assert_eq!(m.thread_key, "a.H?==?Q?b@v");
+        assert_eq!(m.message_id, "a.H?==?Q?b@v");
+        assert_eq!(s.thread_messages(a, "a.H?==?Q?b@v").unwrap().len(), 1);
+        let refs: Vec<String> = s.conn.prepare("SELECT ref_id FROM msg_refs").unwrap().query_map([], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect();
+        assert_eq!(refs, vec!["r@v"]);
+        // Ordinary keys are left alone, and reopening changes nothing more.
+        drop(s);
+        let s = Store::open(&path).unwrap();
+        assert_eq!(s.message(id).unwrap().unwrap().thread_key, "a.H?==?Q?b@v");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mailing_lists_are_not_collected_and_old_ones_go() {
+        let (s, a) = store_with_account();
+        let m = MessageMeta {
+            from: Addr { name: "Sim users".into(), email: "sim-users@listserv.example.edu".into() },
+            to: vec![Addr { name: "Ana".into(), email: "ana@uni.example".into() }],
+            cc: vec![Addr { name: "".into(), email: "users-request@lists.example.org".into() }],
+            ..meta("l@x", &[], "Hi", 100)
+        };
+        assert_eq!(s.collect_from(a, "INBOX", &m).unwrap(), 1);
+        let emails = |s: &Store| -> Vec<String> { s.list_contacts("", 100).unwrap().into_iter().flat_map(|c| c.contact.emails).collect() };
+        assert_eq!(emails(&s), vec!["ana@uni.example"]);
+        // One collected before lists were recognized is dropped; Ana stays.
+        let src = s.collected_source().unwrap();
+        s.conn.execute(
+            "INSERT INTO contacts (source_id, name, search, data) VALUES (?1, 'L', 'l', ?2)",
+            params![src, r#"{"name":"L","emails":["sim-users@listserv.example.edu"]}"#],
+        )
+        .unwrap();
+        assert_eq!(emails(&s).len(), 2);
+        assert_eq!(s.drop_collected_robots().unwrap(), 1);
+        assert_eq!(emails(&s), vec!["ana@uni.example"]);
     }
 
     #[test]

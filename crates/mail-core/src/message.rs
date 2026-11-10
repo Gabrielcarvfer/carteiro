@@ -67,8 +67,15 @@ fn addrs(a: Option<&Address>) -> Vec<Addr> {
     }
 }
 
+/// A message id as stored: no angle brackets, and no whitespace (ids can't
+/// contain any, but some senders fold long ones across lines; a line break
+/// inside a conversation key doesn't survive the trip to the page and back).
+pub(crate) fn clean_id(s: &str) -> String {
+    s.trim().trim_start_matches('<').trim_end_matches('>').chars().filter(|c| !c.is_whitespace()).collect()
+}
+
 fn ids(v: &HeaderValue) -> Vec<String> {
-    let clean = |s: &str| s.trim().trim_start_matches('<').trim_end_matches('>').to_string();
+    let clean = |s: &str| clean_id(s);
     match v {
         HeaderValue::Text(t) => vec![clean(t)],
         HeaderValue::TextList(l) => l.iter().map(|s| clean(s)).collect(),
@@ -88,7 +95,7 @@ pub fn parse_meta(raw: &[u8]) -> MessageMeta {
     let from = addrs(msg.from()).into_iter().next().unwrap_or_default();
     let date = msg.date().map(|d| d.to_timestamp()).unwrap_or(0);
     let subject = msg.subject().unwrap_or("").trim().to_string();
-    let mut message_id = msg.message_id().unwrap_or("").trim().to_string();
+    let mut message_id = clean_id(msg.message_id().unwrap_or(""));
     if message_id.is_empty() {
         message_id = synthetic_id(format!("{}|{}|{}", from.email, date, subject).as_bytes());
     }
@@ -443,6 +450,46 @@ mod tests {
         assert_eq!(m.subject, "Re: Plans");
         assert_eq!(m.date, 1727776800);
         assert_eq!(m.snippet, "Sounds good!");
+    }
+
+    // Message ids a sender folded across lines, padded or mangled: the
+    // whitespace goes (ids can't contain any) so the key is one plain line.
+    #[test]
+    fn message_ids_lose_folding_and_whitespace() {
+        let cases: &[(&[u8], &str)] = &[
+            // An encoded word folded mid-id (as some senders do).
+            (b"Message-ID: <AEE.1.H?=\r\n =?UTF-8?Q?mail.jo=5Fdoe@example.net>\r\n", "AEE.1.H?==?UTF-8?Q?mail.jo=5Fdoe@example.net"),
+            (b"Message-ID:\r\n <abc@x>\r\n", "abc@x"),
+            (b"Message-ID: <abc\r\n\t@x>\r\n", "abc@x"),
+            (b"Message-ID: <a b@x>\r\n", "ab@x"),
+            (b"Message-ID:   <abc@x>   \r\n", "abc@x"),
+            (b"Message-ID: abc@x\r\n", "abc@x"),
+            (b"Message-ID: <abc@x>\n", "abc@x"),
+        ];
+        for (head, want) in cases {
+            let raw = [*head, &b"From: a@x\r\nSubject: s\r\n\r\nbody\r\n"[..]].concat();
+            let m = parse_meta(&raw);
+            assert_eq!(m.message_id, *want, "{}", String::from_utf8_lossy(head));
+        }
+    }
+
+    #[test]
+    fn reference_ids_lose_folding_too() {
+        let raw = b"Message-ID: <r@x>\r\nIn-Reply-To: <AEE.1.H?=\r\n =?UTF-8?Q?mail@v>\r\nReferences: <one\r\n @x>\r\n <AEE.1.H?=\r\n =?UTF-8?Q?mail@v>\r\nFrom: a@x\r\n\r\nhi\r\n";
+        let m = parse_meta(raw);
+        assert_eq!(m.in_reply_to, vec!["AEE.1.H?==?UTF-8?Q?mail@v"]);
+        assert!(m.references.iter().all(|r| !r.chars().any(char::is_whitespace)), "{:?}", m.references);
+        assert!(m.references.contains(&"AEE.1.H?==?UTF-8?Q?mail@v".to_string()), "{:?}", m.references);
+    }
+
+    #[test]
+    fn clean_id_keeps_ordinary_ids() {
+        for id in ["abc@x", "CAB7xq+Zk9-w@mail.example.com", "f00dcafe-1234@example.org", "x.y_z=1@[127.0.0.1]"] {
+            assert_eq!(clean_id(&format!("<{id}>")), id);
+            assert_eq!(clean_id(id), id);
+        }
+        assert_eq!(clean_id("<>"), "");
+        assert_eq!(clean_id(" \r\n\t "), "");
     }
 
     #[test]

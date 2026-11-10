@@ -34,7 +34,22 @@ pub fn is_person_address(email: &str) -> bool {
         || l.starts_with("bounce")
         // Variable envelope addresses: long random-looking local parts.
         || (l.len() > 40 && l.chars().filter(|c| c.is_ascii_digit()).count() > 10);
-    !robot
+    !robot && !is_list_address(&l, &domain.to_ascii_lowercase())
+}
+
+/// Mailing lists: anything at a list server (LISTSERV, Mailman, Sympa hosts
+/// such as listserv.example.edu or lists.example.org), and the addresses list
+/// software uses for itself.
+fn is_list_address(local: &str, domain: &str) -> bool {
+    const HOSTS: &[&str] = &["listserv", "lists", "list", "mailman", "sympa", "majordomo", "googlegroups.com", "groups.io"];
+    const LOCALS: &[&str] = &["listserv", "majordomo", "mailman", "sympa", "lyris", "list"];
+    HOSTS.iter().any(|h| domain == *h || domain.starts_with(&format!("{h}.")) || (h.contains('.') && domain.ends_with(&format!(".{h}"))))
+        || LOCALS.contains(&local)
+        || local.starts_with("owner-")
+        || local.ends_with("-request")
+        || local.ends_with("-owner")
+        || local.ends_with("-bounces")
+        || local.contains("-bounces+")
 }
 
 impl Contact {
@@ -421,6 +436,21 @@ mod tests {
         for r in ["noreply@x.org", "no-reply@accounts.example", "notifications@github.example", "MAILER-DAEMON@x.org",
             "bounce-123@mail.example", "do-not-reply@bank.example", "shop-noreply@x.org", "x", "a@b", "a b@c.org"] {
             assert!(!is_person_address(r), "{r}");
+        }
+    }
+
+    #[test]
+    fn mailing_lists_are_not_people() {
+        for l in ["sim-users@listserv.example.edu", "SOME-LIST@LISTSERV.EXAMPLE.EDU", "dev@lists.example.org", "team@list.uni.example",
+            "announce@mailman.example.net", "users@sympa.example.fr", "group@googlegroups.com", "x@sub.googlegroups.com",
+            "club@groups.io", "listserv@uni.example", "majordomo@x.org", "owner-users@x.org", "users-request@x.org",
+            "users-owner@x.org", "users-bounces@x.org", "users-bounces+me=x.org@x.org"] {
+            assert!(!is_person_address(l), "{l}");
+        }
+        // People whose address merely resembles list words stay.
+        for p in ["lister@example.org", "listserver.admin@corp.example", "ana@listing.example", "ana@mylists.example",
+            "owner@shop.example", "request@x.org", "ana@example.edu", "ana@uni.listserv-friends.example"] {
+            assert!(is_person_address(p), "{p}");
         }
     }
 
