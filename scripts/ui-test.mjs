@@ -333,6 +333,17 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 860, false], ["phone", 39
     await swipe(wd * 0.6);
     expect(await on() === "about", `swipe back from the first: ${await on()}`);
   });
+  await test("settings: closing the window is a choice, tray by default", async () => {
+    if (mobile) return; // phones have no tray: the choice isn't shown
+    await click("[data-click=pivot][data-k=general]"); await sleep(800);
+    const saved = () => js(`import("./js/api.js").then(({ api }) => api.getSettings()).then((s) => s.close_to_tray)`);
+    expect(await js(`document.querySelector("#modal [name=close-action][value=tray]").checked`), "tray isn't the default");
+    expect(await saved() === true, "default not saved as tray");
+    await click("#modal [name=close-action][value=quit]"); await sleep(400);
+    expect(await saved() === false, "choosing Quit wasn't saved");
+    await click("#modal [name=close-action][value=tray]"); await sleep(400);
+    expect(await saved() === true, "choosing the tray again wasn't saved");
+  });
   await test("settings: about has the logo and links, text sizes are roomy", async () => {
     await click("[data-click=pivot][data-k=about]"); await sleep(800);
     expect(await js(`!!document.querySelector("#modal .about-head img[src='logo.svg']")?.naturalWidth`), "no logo");

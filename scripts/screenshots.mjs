@@ -62,6 +62,9 @@ const steps = {
   async phoneMail() { await page(390, 844, true, "light"); await shot("phone-mail", true); },
   async phoneRead() { await page(390, 844, true, "light"); await js(`document.querySelectorAll('.item')[0]?.click()`); await sleep(1200); await shot("phone-reading", true); },
   async phoneCal() { await page(390, 844, true, "light"); await click("[data-mode=calendar]"); await sleep(1200); await shot("phone-calendar", true); },
+  // Not in the README: for checking the settings layout.
+  async settingsAbout() { await page(1440, 900, false, "light"); await click("[data-click=settings]"); await sleep(1000); await click("[data-click=pivot][data-k=about]"); await sleep(900); await shot("settings-about"); },
+  async settingsAboutPhone() { await page(390, 844, true, "light"); await js(`document.querySelector("[data-click=settings]").click()`); await sleep(1000); await click("[data-click=pivot][data-k=about]"); await sleep(900); await shot("settings-about-phone", true); },
   async phoneJump() { await page(390, 844, true, "dark"); await click("[data-mode=contacts]"); await sleep(800); await click(".ct-letter"); await sleep(400); await shot("phone-contacts", true); },
 };
 for (const [k, f] of Object.entries(steps)) if (!only || only.split(",").includes(k)) await f();

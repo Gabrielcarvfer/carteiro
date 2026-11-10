@@ -83,6 +83,8 @@ const summary = (key) => {
   };
 };
 
+let appSettings = { offline_days: 30, close_to_tray: true, notify: true, sync_minutes: 15, work_days: [0, 1, 2, 3, 4], work_start: 480, work_end: 1080, off_hours_minutes: 60, schedule_version: 1, auto_update: true, google: { client_id: "", client_secret: null }, microsoft: { client_id: "", client_secret: null } };
+
 let contacts = [
   { id: 1, source_id: 1, read_only: false, uid: "a", name: "Ana Souza", emails: ["ana@example.com"], phones: ["+55 11 91234-5678"], organization: "Acme", notes: "" },
   { id: 2, source_id: 2, read_only: true, uid: "b", name: "Bob Stone", emails: ["bob@work.example"], phones: [], organization: "", notes: "Met at the conference." },
@@ -111,7 +113,8 @@ export async function mock(cmd, a) {
     case "export_mail": return ["/home/demo/Downloads/Carteiro mail 2026-11-08 0130", [{ path: "/home/demo/Downloads/Carteiro mail 2026-11-08 0130/demo@example.com", folders: 5, messages: 1234, skipped: 0 }]];
     case "export_settings": return "/home/demo/Downloads/Carteiro settings 2026-11-08 0130.json";
     case "import_settings": return { report: { accounts_added: ["demo@new.example"], accounts_existing: ["demo@example.com"], needs_password: ["demo@new.example"], needs_sign_in: [], rules_added: 3, calendars_added: 1, calendars_to_readd: ["Work CalDAV"] }, ui: { week_start: "1", theme: "dark" } };
-    case "get_settings": return { offline_days: 30, close_to_tray: true, notify: true, sync_minutes: 15, work_days: [0, 1, 2, 3, 4], work_start: 480, work_end: 1080, off_hours_minutes: 60, schedule_version: 1, auto_update: true, google: { client_id: "", client_secret: null }, microsoft: { client_id: "", client_secret: null } };
+    case "get_settings": return structuredClone(appSettings);
+    case "set_settings": Object.assign(appSettings, a.config); return null;
     case "send_message": return "sent";
     case "guess_settings": return { incoming_protocol: "imap", incoming: account.incoming, smtp: account.smtp, note: null };
     case "add_account": return { ...a.account, id: 2 };

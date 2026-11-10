@@ -441,7 +441,11 @@ export async function openSettings(start = "general") {
           <div class="workdays swipe-prefs">${SWIPE_ACTIONS.map(([k, l]) => html`<label class="day"><input type="checkbox" name="swipe-act" value="${k}" ${swipeActions().includes(k) ? "checked" : ""} data-change="swipe-pref" /><span>${l}</span></label>`)}</div>
           <h3>Notifications</h3>
           <label class="check"><input type="checkbox" name="notify" ${app.notify ? "checked" : ""} data-change="app-autosave" /> Notify me when new mail arrives</label>
-          <label class="check hide-narrow"><input type="checkbox" name="close-to-tray" ${app.close_to_tray ? "checked" : ""} data-change="app-autosave" /> Closing the window keeps Carteiro running in the system tray</label>
+          <div class="group hide-narrow">
+            <h3>When I close the window</h3>
+            <label class="check"><input type="radio" name="close-action" value="tray" ${app.close_to_tray ? "checked" : ""} data-change="app-autosave" /> Keep Carteiro running in the system tray (mail keeps syncing)</label>
+            <label class="check"><input type="radio" name="close-action" value="quit" ${app.close_to_tray ? "" : "checked"} data-change="app-autosave" /> Quit Carteiro</label>
+          </div>
           <h3>Text size</h3>
           <div class="workdays text-size">${TEXT_SIZES.map(([v, l]) => html`<label class="day"><input type="radio" name="text-size" value="${v}" ${textSize() === v ? "checked" : ""} data-change="text-size" /><span style="font-size:${Math.round(14 * v)}px">${l}</span></label>`)}</div>
           <h3>Calendar</h3>
@@ -691,7 +695,7 @@ on("change", "app-autosave", async () => {
   const v = (n) => $(`#modal [name=${n}]`);
   try {
     await api.setSettings({
-      close_to_tray: v("close-to-tray").checked,
+      close_to_tray: $("#modal [name=close-action]:checked")?.value !== "quit",
       notify: v("notify").checked,
       sync_minutes: +v("sync-minutes").value || 15,
       work_days: [...document.querySelectorAll("#modal [name=work-day]:checked")].map((x) => +x.value),
