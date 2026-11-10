@@ -522,7 +522,7 @@ export async function openSettings(start = "general") {
   renderAbout(upd.current);
 }
 
-function showPivot(k, smooth = true) {
+function showPivot(k, smooth = false) {
   const pane = $(`#modal .pivot[data-k="${k}"]`);
   pane?.parentElement.scrollTo({ left: pane.offsetLeft - pane.parentElement.offsetLeft, behavior: smooth ? "smooth" : "instant" });
   markPivot(k);
@@ -532,11 +532,14 @@ function markPivot(k) {
   const nav = $("#modal .pivot-titles");
   if (!nav) return;
   const i = PIVOTS.findIndex(([x]) => x === k);
-  for (const b of nav.children) {
-    const j = PIVOTS.findIndex(([x]) => x === b.dataset.k);
-    b.classList.toggle("on", j === i);
-    b.setAttribute("aria-selected", j === i);
-    b.style.order = (j - i + PIVOTS.length) % PIVOTS.length;
+  // The elements themselves move (not CSS order: older WebKitGTK left the
+  // titles drawn over each other when they changed places).
+  const buttons = [...nav.children];
+  for (let n = 0; n < PIVOTS.length; n++) {
+    const b = buttons.find((x) => x.dataset.k === PIVOTS[(i + n) % PIVOTS.length][0]);
+    b.classList.toggle("on", n === 0);
+    b.setAttribute("aria-selected", n === 0);
+    if (nav.children[n] !== b) nav.insertBefore(b, nav.children[n]);
   }
 }
 on("click", "pivot", (el) => showPivot(el.dataset.k));
