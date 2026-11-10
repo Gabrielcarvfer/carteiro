@@ -98,12 +98,6 @@
    "url": "https://github.com/oyvindln/adler2"
   },
   {
-   "name": "ahash",
-   "version": "0.8.12",
-   "license": "MIT OR Apache-2.0",
-   "url": "https://github.com/tkaitchuck/ahash"
-  },
-  {
    "name": "aho-corasick",
    "version": "1.1.5",
    "license": "Unlicense OR MIT",
@@ -717,21 +711,15 @@
   },
   {
    "name": "hashbrown",
-   "version": "0.14.5",
-   "license": "MIT OR Apache-2.0",
-   "url": "https://github.com/rust-lang/hashbrown"
-  },
-  {
-   "name": "hashbrown",
    "version": "0.17.1",
    "license": "MIT OR Apache-2.0",
    "url": "https://github.com/rust-lang/hashbrown"
   },
   {
    "name": "hashlink",
-   "version": "0.9.1",
+   "version": "0.12.2",
    "license": "MIT OR Apache-2.0",
-   "url": "https://github.com/kyren/hashlink"
+   "url": "https://github.com/djc/hashlink"
   },
   {
    "name": "heck",
@@ -975,7 +963,7 @@
   },
   {
    "name": "libsqlite3-sys",
-   "version": "0.30.1",
+   "version": "0.39.1",
    "license": "MIT",
    "url": "https://github.com/rusqlite/rusqlite"
   },
@@ -1317,7 +1305,7 @@
   },
   {
    "name": "rusqlite",
-   "version": "0.32.1",
+   "version": "0.41.1",
    "license": "MIT",
    "url": "https://github.com/rusqlite/rusqlite"
   },
@@ -2172,12 +2160,6 @@
    "version": "0.8.4",
    "license": "Unicode-3.0",
    "url": "https://github.com/unicode-org/icu4x"
-  },
-  {
-   "name": "zerocopy",
-   "version": "0.8.63",
-   "license": "BSD-2-Clause OR Apache-2.0 OR MIT",
-   "url": "https://github.com/google/zerocopy"
   },
   {
    "name": "zerofrom",
