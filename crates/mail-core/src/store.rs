@@ -1584,6 +1584,27 @@ impl Store {
         Ok(true)
     }
 
+    /// One date of a series the organizer changed (a file with just that
+    /// date, by its RECURRENCE-ID): the stored date moves to the new time,
+    /// and takes the new title, place and notes where the file has them.
+    /// Your answer for that date stays. False if there's no such date.
+    pub fn update_invite_instance(&self, uid: &str, sender: &str, organizer: &str, instance: i64, e: &crate::ical::Event) -> Result<bool> {
+        if !self.invite_exists(uid)? || !self.may_change_invite(uid, sender, organizer)? {
+            return Ok(false);
+        }
+        let cal = self.invitations_calendar()?;
+        let n = self.conn.execute(
+            "UPDATE events SET start = ?4, end = ?5, all_day = ?6, floating = ?7, tzid = ?8, cancelled = ?9,
+                 title = CASE WHEN ?10 = '' THEN title ELSE ?10 END,
+                 location = CASE WHEN ?11 = '' THEN location ELSE ?11 END,
+                 description = CASE WHEN ?12 = '' THEN description ELSE ?12 END
+             WHERE id = (SELECT id FROM events WHERE calendar_id = ?1 AND remote_id = ?2 AND (start = ?3 OR start / 86400 = ?3 / 86400)
+                         ORDER BY start = ?3 DESC LIMIT 1)",
+            params![cal, uid, instance, e.start, e.end, e.all_day, e.floating, e.tzid, e.cancelled, e.title, e.location, e.description],
+        )?;
+        Ok(n > 0)
+    }
+
     /// Your answer to one event ("yes", "maybe", "no", or "" to clear); in a
     /// series, just that date. Stays on this device.
     pub fn set_rsvp(&self, event_id: i64, rsvp: &str) -> Result<()> {
@@ -1660,6 +1681,28 @@ impl Store {
         self.conn.execute("DELETE FROM msg_text WHERE status = 'clean' AND msg IN (SELECT id FROM messages WHERE att_types LIKE '% ics %')", [])?;
         self.set_secret("invites_version", "3")?;
         Ok(n)
+    }
+
+    /// Messages already found clean that carry a calendar file, oldest
+    /// first: what a rescan for invitations reads again.
+    pub fn clean_calendar_messages(&self) -> Result<Vec<i64>> {
+        let mut st = self.conn.prepare(
+            "SELECT m.id FROM messages m JOIN msg_text t ON t.msg = m.id AND t.status = 'clean'
+             WHERE m.att_types LIKE '% ics %' ORDER BY m.date, m.id",
+        )?;
+        let rows = st.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<Vec<i64>>>()?;
+        Ok(rows)
+    }
+
+    /// What reading a message's calendar files did ("added", "no calendar"…).
+    pub fn invite_outcome(&self, msg: i64) -> Result<Option<String>> {
+        Ok(self.conn.query_row("SELECT outcome FROM invite_msgs WHERE msg = ?1", [msg], |r| r.get(0)).optional()?)
+    }
+
+    /// Lets a message's calendar files be read again (see `invites::import`).
+    pub fn forget_invites(&self, msg: i64) -> Result<()> {
+        self.conn.execute("DELETE FROM invite_msgs WHERE msg = ?1", [msg])?;
+        Ok(())
     }
 
     pub fn invites_checked(&self, msg: i64) -> Result<bool> {

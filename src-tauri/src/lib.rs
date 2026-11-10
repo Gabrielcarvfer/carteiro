@@ -825,6 +825,21 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         }
     })
     .build(app)?;
+    // GNOME's AppIndicator extension reads the menu once, when the icon
+    // appears; if that's before the menu is published it shows empty items.
+    // Setting it again a moment later makes it read the menu again.
+    #[cfg(target_os = "linux")]
+    {
+        let handle = app.handle().clone();
+        tauri::async_runtime::spawn(async move {
+            for delay in [2, 10] {
+                tokio::time::sleep(Duration::from_secs(delay)).await;
+                if let Some(tray) = handle.tray_by_id("main") {
+                    let _ = tray.set_menu(Some(menu.clone()));
+                }
+            }
+        });
+    }
     Ok(())
 }
 
@@ -1256,10 +1271,29 @@ async fn sync_calendars_inner(s: &AppState) -> Vec<String> {
     errors
 }
 
-/// Returns per-source errors (empty when everything synced).
+/// Returns per-source errors (empty when everything synced). Also reads
+/// every checked email with a calendar file again (adding what's missing,
+/// never copies), and has mail not checked yet checked, so its invitations
+/// follow.
 #[tauri::command]
-async fn sync_calendars(state: State<'_, AppState>) -> Res<Vec<String>> {
-    Ok(sync_calendars_inner(state.inner()).await)
+async fn sync_calendars(app: AppHandle, state: State<'_, AppState>) -> Res<Vec<String>> {
+    let s = state.inner();
+    let errors = sync_calendars_inner(s).await;
+    let store = s.store.clone();
+    let read = tauri::async_runtime::spawn_blocking(move || ops::rescan_invites(&store)).await.map_err(err)?.map_err(err)?;
+    eprintln!("calendar sync: read {read} emails with calendars again");
+    calendar_changed(&app);
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let s = handle.state::<AppState>();
+        if s.clam.addr().is_some() {
+            index_with_activity(&handle, &s).await;
+            calendar_changed(&handle);
+        } else {
+            scanner_on_demand(&handle, &s).await;
+        }
+    });
+    Ok(errors)
 }
 
 #[tauri::command]

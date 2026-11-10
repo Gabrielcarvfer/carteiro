@@ -74,6 +74,26 @@ fn on_clean(store: &Mutex<Store>, id: i64, raw: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// Reads every clean message with a calendar file again, oldest first, as
+/// if it had just arrived: anything missing from the Invitations calendar
+/// is added. Meetings already there are updated in place (never copied),
+/// older updates don't override newer ones, and dates or series you
+/// removed stay removed. Returns how many messages were read.
+pub fn rescan_invites(store: &Mutex<Store>) -> Result<usize> {
+    let ids = lock(store)?.clean_calendar_messages()?;
+    let mut changed = false;
+    for &id in &ids {
+        let mut st = lock(store)?;
+        let (Some(m), Some(raw)) = (st.message(id)?, st.raw(id)?) else { continue };
+        st.forget_invites(id)?;
+        changed |= crate::invites::import(&mut st, id, &m.from.email, &raw, crate::calendar::now()).is_ok_and(|t| !t.is_empty());
+    }
+    if changed {
+        INVITES_CHANGED.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    Ok(ids.len())
+}
+
 static INVITES_CHANGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Whether invitations changed the calendar since the last call (so an open

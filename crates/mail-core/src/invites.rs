@@ -118,7 +118,17 @@ fn apply(store: &mut Store, sender: &str, ics: &str, now: i64, by_hand: bool, ac
         }
         // Someone who may not change the meeting: theirs is kept apart.
         let key = if store.may_change_invite(&uid, sender, &organizer)? { uid.clone() } else { format!("{uid}#{}", sender.to_lowercase()) };
-        let changed = if method == "CANCEL" && store.invite_exists(&key)? {
+        // Only changed dates (no series in the file) of a meeting we have:
+        // those dates move.
+        let only_dates = !events.is_empty() && events.iter().all(|e| e.recurrence_id.is_some());
+        let changed = if method != "CANCEL" && !answer && only_dates && store.invite_exists(&key)? {
+            let mut any = false;
+            for e in &events {
+                any |= store.update_invite_instance(&key, sender, &organizer, e.recurrence_id.unwrap_or(e.start), e)?;
+            }
+            outcome = if any { "date changed" } else { "nothing" };
+            any
+        } else if method == "CANCEL" && store.invite_exists(&key)? {
             let one = events.iter().find(|e| e.recurrence_id.is_some()).filter(|_| !events.iter().any(|e| e.recurrence_id.is_none()));
             let done = store.cancel_invite(&key, sender, &organizer, one.and_then(|e| e.recurrence_id))?;
             if done {
@@ -238,6 +248,100 @@ mod tests {
         // Adding the file by hand brings it back, removed dates included.
         assert_eq!(import_ics(&mut s, "ana@example.org", &ics("REQUEST", &up4), now, None).unwrap(), 1);
         assert_eq!(titles(&s).len(), 4);
+    }
+
+    // The calendar's sync button reads every clean invitation again: what's
+    // missing comes back, nothing is doubled, newer wins, removals stick.
+    #[test]
+    fn rescan_adds_missing_meetings_without_duplicates() {
+        let s = Store::open_in_memory().unwrap();
+        let ep = crate::Endpoint { host: "h".into(), port: 993, security: crate::Security::Tls, allow_insecure: false };
+        let mut a = crate::Account {
+            id: 0, name: "Me".into(), email: "me@x.org".into(), username: "me".into(), incoming_protocol: crate::Protocol::Imap,
+            incoming: ep.clone(), smtp: ep, smtp_username: None, signature: String::new(), auth: crate::AuthMethod::Password,
+        };
+        s.add_account(&mut a).unwrap();
+        // Arrives (clean) in this order: the series, an update to 2 dates,
+        // another meeting, and a mail with no calendar.
+        let other = SERIES.replace("weekly-1", "other-1").replace("COUNT=4", "COUNT=1");
+        let update = SERIES.replace("SEQUENCE:0", "SEQUENCE:1").replace("COUNT=4", "COUNT=2");
+        let mails: Vec<Vec<u8>> = vec![
+            mail(&ics("REQUEST", SERIES), true),
+            mail(&ics("REQUEST", &update), false),
+            mail(&ics("REQUEST", &other), true),
+            b"From: Bo <bo@example.org>\r\nSubject: hi\r\n\r\nno calendar here\r\n".to_vec(),
+        ];
+        let mut ids = Vec::new();
+        for (n, raw) in mails.iter().enumerate() {
+            let mut meta = crate::message::parse_meta(raw);
+            meta.message_id = format!("m{n}");
+            meta.date = 1_000 + n as i64;
+            let id = s.insert_message(&crate::store::NewMessage { account_id: a.id, folder: "INBOX".into(), uid: Some(n as u32 + 1), pop_uidl: None, meta, seen: false, flagged: false, size: 1, raw: Some(raw.clone()) }).unwrap();
+            s.set_text(id, true, "").unwrap();
+            ids.push(id);
+        }
+        // Only the first mail was read when it came (say a crash or an older
+        // version missed the rest).
+        let now = crate::ical::parse_datetime("20261101T000000Z").unwrap().0;
+        let mut st = s;
+        import(&mut st, ids[0], "ana@example.org", &mails[0], now).unwrap();
+        assert_eq!(titles(&st).len(), 4);
+        let store = std::sync::Mutex::new(st);
+
+        assert_eq!(crate::ops::rescan_invites(&store).unwrap(), 3, "the three mails with a calendar file");
+        let after = titles(&store.lock().unwrap());
+        assert_eq!(after.iter().filter(|t| t.0.starts_with("2026")).count(), 3, "2 dates of the updated series + the other meeting: {after:?}");
+        assert!(crate::ops::take_invites_changed());
+
+        // Again, and again: nothing doubles.
+        crate::ops::rescan_invites(&store).unwrap();
+        crate::ops::rescan_invites(&store).unwrap();
+        assert_eq!(titles(&store.lock().unwrap()), after, "rescanning doesn't add copies");
+
+        // A date you removed stays removed; your answer stays.
+        {
+            let st = store.lock().unwrap();
+            let cal = st.invitations_calendar().unwrap();
+            let evs: Vec<_> = st.events_between(0, i64::MAX / 2).unwrap().into_iter().filter(|e| e.calendar_id == cal).collect();
+            let weekly: Vec<_> = evs.iter().filter(|e| e.event.uid == "weekly-1").collect();
+            st.set_rsvp(weekly[0].id, "yes").unwrap();
+            st.remove_series_range(weekly[1].id, Some(weekly[1].event.start), Some(weekly[1].event.start + 1)).unwrap();
+            let other: Vec<_> = evs.iter().filter(|e| e.event.uid == "other-1").collect();
+            st.remove_series_range(other[0].id, None, None).unwrap();
+        }
+        let kept = titles(&store.lock().unwrap());
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        crate::ops::rescan_invites(&store).unwrap();
+        assert_eq!(titles(&store.lock().unwrap()), kept, "removed dates and series don't come back; answers stay");
+        assert_eq!(kept[0].1, "yes");
+    }
+
+    // An organizer moving one date of a series (Outlook sends just that
+    // date, often with the series' own sequence number) moves it here too.
+    #[test]
+    fn one_changed_date_moves() {
+        let (mut s, _) = store_with_messages(4);
+        let now = crate::ical::parse_datetime("20261101T000000Z").unwrap().0;
+        let series = SERIES.replace("SEQUENCE:0", "SEQUENCE:3");
+        import(&mut s, 1, "ana@example.org", &mail(&ics("REQUEST", &series), true), now).unwrap();
+        let cal = s.invitations_calendar().unwrap();
+        let second = s.events_between(0, i64::MAX / 2).unwrap().into_iter().filter(|e| e.calendar_id == cal).nth(1).unwrap();
+        s.set_rsvp(second.id, "yes").unwrap();
+        // 16 Nov 10:00 moves to 17 Nov 11:00, in another room; same sequence.
+        let moved = "BEGIN:VEVENT\r\nUID:weekly-1\r\nSEQUENCE:3\r\nRECURRENCE-ID;TZID=Europe/Lisbon:20261116T100000\r\nDTSTART;TZID=Europe/Lisbon:20261117T110000\r\nDTEND;TZID=Europe/Lisbon:20261117T113000\r\nLOCATION:Room 9\r\nORGANIZER:mailto:ana@example.org\r\nEND:VEVENT\r\n";
+        let touched = import(&mut s, 2, "ana@example.org", &mail(&ics("REQUEST", moved), false), now).unwrap();
+        let outcome = s.invite_outcome(2).unwrap();
+        assert_eq!(touched, ["weekly-1"]);
+        assert_eq!(outcome.as_deref(), Some("date changed"));
+        let evs: Vec<_> = s.events_between(0, i64::MAX / 2).unwrap().into_iter().filter(|e| e.calendar_id == cal).collect();
+        assert_eq!(evs.iter().map(|e| crate::ical::fmt_date(e.event.start)).collect::<Vec<_>>(), ["20261109", "20261117", "20261123", "20261130"], "moved, not copied");
+        let m = evs.iter().find(|e| crate::ical::fmt_date(e.event.start) == "20261117").unwrap();
+        assert_eq!(m.event.location, "Room 9");
+        assert_eq!(m.event.title, "Team sync", "the title it had");
+        assert_eq!(m.rsvp, "yes", "your answer stays");
+        // Someone else can't move it.
+        import(&mut s, 3, "mallory@evil.example", &mail(&ics("REQUEST", &moved.replace("20261117T11", "20261118T11").replace("RECURRENCE-ID;TZID=Europe/Lisbon:20261116", "RECURRENCE-ID;TZID=Europe/Lisbon:20261117")), false), now).unwrap();
+        assert!(s.events_between(0, i64::MAX / 2).unwrap().iter().any(|e| e.calendar_id == cal && crate::ical::fmt_date(e.event.start) == "20261117"));
     }
 
     #[test]
