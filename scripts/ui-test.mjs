@@ -288,6 +288,18 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 860, false], ["phone", 39
     await click(".ct-thread"); await sleep(1000);
     expect(await js(`document.querySelector("[data-mode=mail]").classList.contains("on") || document.body.dataset.mode === "mail" || !document.querySelector("#contacts")?.offsetParent`), "didn't switch to mail");
     expect(/Q3 planning/.test(await js(`document.querySelector("#reader").textContent`)), "conversation not opened");
+    // Back returns to Ana, not to the inbox; Back again closes Ana.
+    await js(`window.carteiroBack()`); await sleep(1000);
+    expect(await js(`!document.querySelector("#contacts").hidden`), "Back didn't return to contacts");
+    expect(await js(`document.querySelector(".ct-card h1")?.textContent`) === "Ana Souza", "contact not open after Back");
+    expect(await js(`!document.querySelector(".app").classList.contains("has-sel")`), "conversation still open");
+    await js(`window.carteiroBack()`); await sleep(600);
+    expect(await js(`!document.querySelector(".ct-card")`), "second Back didn't close the contact");
+    // A conversation opened in mail itself still goes back to the list.
+    await click("[data-mode=mail]"); await sleep(600);
+    await js(`document.querySelector("#threads [data-click=thread]").click()`); await sleep(800);
+    await js(`window.carteiroBack()`); await sleep(600);
+    expect(await js(`document.querySelector("#contacts").hidden`), "Back from a mail conversation left mail");
   });
 
   await page(w, h, mobile);

@@ -11,8 +11,10 @@ import { openCompose } from "./dialogs.js";
 
 const K = { query: "", list: [], sources: [], selected: null, jumper: false, threads: null };
 
-/** Leaving the section closes the open contact. */
-export function leaveContacts() {
+/** Leaving the section closes the open contact (unless it's only to read
+ * one of its conversations: Back returns to it). */
+export function leaveContacts(keep = false) {
+  if (keep) return;
   if (K.selected || K.jumper) { K.selected = null; K.jumper = false; render(); }
 }
 
@@ -166,7 +168,7 @@ async function loadThreads(c) {
   K.threads = { id: c.id, list };
   render();
 }
-on("click", "ct-thread", (el) => showMessage(+el.dataset.acct, el.dataset.key, +el.dataset.id));
+on("click", "ct-thread", (el) => showMessage(+el.dataset.acct, el.dataset.key, +el.dataset.id, "contacts"));
 
 function origin(c) {
   const src = K.sources.find((s) => s.id === c.source_id);

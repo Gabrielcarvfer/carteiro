@@ -72,7 +72,7 @@ async function guard(p) {
 const layers = [];
 let ignorePops = 0;
 const closers = {
-  thread: () => { S.selected = null; S.messages = []; layoutState(); renderReader(); renderList(); },
+  thread: () => closeThread(),
   drawer: () => { S.drawer = false; layoutState(); },
   modal: () => put("#modal", ""),
   compose: () => put("#compose", ""),
@@ -214,7 +214,7 @@ on("click", "mode", (el) => {
   layoutState();
   if (cal) showCalendar();
   if (people) showContacts();
-  else leaveContacts();
+  else leaveContacts(keepContact);
 });
 
 // ---- data flow -------------------------------------------------------------
@@ -329,6 +329,7 @@ async function openFolder(name) {
 
 async function openThread(ref, focusId = null) {
   const [acct, key] = splitRef(ref);
+  S.returnTo = null;
   S.selected = ref;
   S.viewAcct = acct;
   S.loading = true;
@@ -1046,10 +1047,27 @@ on("click", "settings", () => { S.drawer = false; layoutState(); openSettings();
 on("click", "add-account", () => { closeAccountMenu(); openSetup(true); });
 on("click", "menu", () => { S.drawer = true; layoutState(); });
 on("click", "scrim", () => closeDrawer());
-/** Opens a message in the mail view (from elsewhere, e.g. a meeting's details). */
-export function showMessage(accountId, threadKey, messageId) {
+/** Opens a message in the mail view (from elsewhere, e.g. a meeting's
+ * details). From a contact, closing it goes back to that contact. */
+export function showMessage(accountId, threadKey, messageId, from = null) {
+  keepContact = from === "contacts";
   document.querySelector("[data-click=mode][data-mode=mail]")?.click();
+  keepContact = false;
   openThread(refOf(accountId, threadKey), messageId);
+  S.returnTo = from;
+}
+let keepContact = false;
+
+// Closing a conversation; one opened from a contact returns there.
+function closeThread() {
+  const back = S.returnTo;
+  S.returnTo = null;
+  S.selected = null;
+  S.messages = [];
+  layoutState();
+  renderReader();
+  renderList();
+  if (back === "contacts") document.querySelector("[data-click=mode][data-mode=contacts]")?.click();
 }
 
 export function closeDrawer() {
@@ -1090,7 +1108,7 @@ on("click", "thread-act", (el, e) => {
   e.stopPropagation();
   threadAct(el.closest("[data-key]").dataset.key, el.dataset.kind);
 });
-on("click", "back", () => { S.selected = null; S.messages = []; layoutState(); renderReader(); renderList(); });
+on("click", "back", () => closeThread());
 on("click", "toggle-msg", (el, e) => {
   if (e.target.closest("button")) return;
   S.expanded[+el.dataset.id] = !S.expanded[+el.dataset.id];
