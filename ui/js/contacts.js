@@ -5,11 +5,11 @@
 
 import { api } from "./api.js";
 import { $, ask, html, on, put } from "./dom.js";
-import { avatar, icon } from "./format.js";
-import { activityButton, syncLayer, toast } from "./app.js";
+import { avatar, icon, shortDate } from "./format.js";
+import { activityButton, showMessage, syncLayer, toast } from "./app.js";
 import { openCompose } from "./dialogs.js";
 
-const K = { query: "", list: [], sources: [], selected: null, jumper: false };
+const K = { query: "", list: [], sources: [], selected: null, jumper: false, threads: null };
 
 /** Leaving the section closes the open contact. */
 export function leaveContacts() {
@@ -146,8 +146,27 @@ function detail(c) {
       ${c.notes ? html`<pre class="text">${c.notes}</pre>` : ""}
       <p class="muted small">${origin(c)}</p>
     </div>
+    ${c.emails.length ? html`<section class="ct-threads">
+      <h3>Conversations</h3>
+      ${K.threads?.id !== c.id ? html`<p class="muted small">Loading…</p>`
+        : !K.threads.list.length ? html`<p class="muted small">No mail with ${c.name} yet.</p>`
+        : K.threads.list.map((t) => html`<button class="ct-thread ${t.unread ? "unread" : ""}" data-click="ct-thread" data-acct="${t.account_id}" data-key="${t.thread_key}" data-id="${t.latest_id}">
+          <span class="row"><strong class="ellipsis">${t.subject || "(no subject)"}</strong>${t.count > 1 ? html`<span class="count">${t.count}</span>` : ""}<span class="muted small date">${shortDate(t.last_date)}</span></span>
+          <span class="muted small ellipsis">${t.snippet}</span></button>`)}
+    </section>` : ""}
   </div>`;
 }
+
+// The open contact's conversations, loaded when it's opened.
+async function loadThreads(c) {
+  K.threads = null;
+  if (!c?.emails.length) return;
+  const list = (await api.contactThreads(c.emails).catch(() => [])) ?? [];
+  if (K.selected !== c.id) return;
+  K.threads = { id: c.id, list };
+  render();
+}
+on("click", "ct-thread", (el) => showMessage(+el.dataset.acct, el.dataset.key, +el.dataset.id));
 
 function origin(c) {
   const src = K.sources.find((s) => s.id === c.source_id);
@@ -216,7 +235,7 @@ on("input", "ct-search", (el) => {
     box.setSelectionRange(pos, pos);
   }, 150);
 });
-on("click", "ct-open", (el) => { K.selected = +el.dataset.id; render(); });
+on("click", "ct-open", (el) => { K.selected = +el.dataset.id; render(); loadThreads(K.list.find((c) => c.id === K.selected)); });
 on("click", "ct-back", () => { K.selected = null; render(); });
 on("click", "ct-new", () => editor({}));
 on("click", "ct-edit", () => editor(K.list.find((c) => c.id === K.selected)));
@@ -231,6 +250,7 @@ on("click", "ct-save", async (el) => {
     put("#modal", "");
     K.selected = id;
     await load();
+    loadThreads(K.list.find((c) => c.id === id));
   } catch (e) { fail(e); }
 });
 on("click", "ct-delete", async () => {

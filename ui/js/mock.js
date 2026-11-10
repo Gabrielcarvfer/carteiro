@@ -139,6 +139,12 @@ export async function mock(cmd, a) {
         .sort((x, y) => y.last_date - x.last_date);
     }
     case "open_thread": return structuredClone(threads[a.threadKey] ?? []);
+    case "contact_threads": {
+      const want = a.emails.map((e) => e.toLowerCase());
+      const has = (m) => [m.from, ...m.to, ...m.cc].some((p) => want.includes(p.email.toLowerCase()));
+      return Object.keys(threads).filter((k) => threads[k].some(has))
+        .map((k) => ({ ...summary(k), account_id: 1, folder: "INBOX" })).sort((x, y) => y.last_date - x.last_date);
+    }
     case "delete_messages": case "move_messages":
       for (const [k, t] of Object.entries(threads)) { const left = t.filter((m) => !a.ids.includes(m.id)); if (left.length) threads[k] = left; else delete threads[k]; }
       return null;

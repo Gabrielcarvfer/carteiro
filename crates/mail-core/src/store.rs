@@ -237,6 +237,21 @@ impl StoredMessage {
     }
 }
 
+/// A conversation with a contact, wherever it is.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ContactThread {
+    pub account_id: i64,
+    pub thread_key: String,
+    /// Where its newest message is.
+    pub folder: String,
+    pub subject: String,
+    pub snippet: String,
+    pub last_date: i64,
+    pub count: u32,
+    pub unread: u32,
+    pub latest_id: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ThreadSummary {
     pub thread_key: String,
@@ -857,6 +872,52 @@ impl Store {
                 has_attachments: att,
                 latest_id: latest.0,
             });
+        }
+        Ok(out)
+    }
+
+    /// Conversations with anyone at these addresses (as sender or recipient),
+    /// across accounts and folders, newest first: a contact's mail.
+    pub fn threads_with(&self, emails: &[String], limit: u32) -> Result<Vec<ContactThread>> {
+        let emails: Vec<String> = emails.iter().map(|e| e.trim().to_lowercase()).filter(|e| e.contains('@')).collect();
+        if emails.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut args: Vec<rusqlite::types::Value> = vec![i64::from(limit).into()];
+        let mut ors = Vec::new();
+        for e in &emails {
+            args.push(e.clone().into());
+            ors.push(format!("lower(m.from_email) = ?{}", args.len()));
+            args.push(like_pattern(&format!("\"{e}\"")).into());
+            ors.push(format!("m.recipients LIKE ?{} ESCAPE '\\'", args.len()));
+        }
+        // Junk and deleted mail aren't someone's conversations.
+        let sql = format!(
+            "SELECT m.account_id, m.thread_key, MAX(m.date) AS last, COUNT(*), SUM(m.seen = 0) FROM messages m
+             LEFT JOIN folders f ON f.account_id = m.account_id AND f.name = m.folder
+             WHERE ({}) AND COALESCE(f.special, '') NOT IN ('junk', 'trash')
+             GROUP BY m.account_id, m.thread_key ORDER BY last DESC LIMIT ?1",
+            ors.join(" OR ")
+        );
+        let groups = self
+            .conn
+            .prepare(&sql)?
+            .query_map(rusqlite::params_from_iter(args.iter()), |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, u32>(3)?, r.get::<_, u32>(4)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut out = Vec::with_capacity(groups.len());
+        for (account_id, thread_key, last_date, count, unread) in groups {
+            // The oldest message names the conversation; the newest is shown.
+            let (subject, _): (String, i64) = self.conn.query_row(
+                "SELECT subject, id FROM messages WHERE account_id = ?1 AND thread_key = ?2 ORDER BY date ASC, id ASC LIMIT 1",
+                params![account_id, thread_key],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            let (latest_id, folder, snippet): (i64, String, String) = self.conn.query_row(
+                "SELECT id, folder, snippet FROM messages WHERE account_id = ?1 AND thread_key = ?2 ORDER BY date DESC, id DESC LIMIT 1",
+                params![account_id, thread_key],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )?;
+            out.push(ContactThread { account_id, thread_key, folder, subject, snippet, last_date, count, unread, latest_id });
         }
         Ok(out)
     }
@@ -2118,6 +2179,36 @@ mod tests {
         assert_eq!(emails(&s).len(), 2);
         assert_eq!(s.drop_collected_robots().unwrap(), 1);
         assert_eq!(emails(&s), vec!["ana@uni.example"]);
+    }
+
+    #[test]
+    fn threads_with_a_contact() {
+        let (s, a) = store_with_account();
+        let from = |m: MessageMeta, e: &str| MessageMeta { from: Addr { name: "".into(), email: e.into() }, ..m };
+        let to = |m: MessageMeta, e: &str| MessageMeta { to: vec![Addr { name: "".into(), email: e.into() }], ..m };
+        // Ana writes; I reply in the same conversation.
+        insert(&s, a, 1, from(meta("a1@x", &[], "Plans", 100), "ana@x.org"));
+        insert(&s, a, 2, to(from(meta("a2@x", &["a1@x"], "Re: Plans", 200), "me@x.org"), "ana@x.org"));
+        // Ana is copied on another conversation, as Ana@X.org.
+        insert(&s, a, 3, MessageMeta { cc: vec![Addr { name: "".into(), email: "Ana@X.org".into() }], ..from(meta("b@x", &[], "Budget", 300), "bob@x.org") });
+        // Not Ana: a lookalike address, and an unrelated message.
+        insert(&s, a, 4, from(meta("c@x", &[], "Other", 400), "banana@x.org"));
+        insert(&s, a, 5, to(from(meta("d@x", &[], "Hi", 500), "bob@x.org"), "joana@x.org"));
+        let got = s.threads_with(&["ANA@x.org".into()], 50).unwrap();
+        let subjects: Vec<&str> = got.iter().map(|t| t.subject.as_str()).collect();
+        assert_eq!(subjects, ["Budget", "Plans"]);
+        assert_eq!(got[1].count, 2);
+        assert_eq!(got[1].last_date, 200);
+        assert_eq!(got[1].thread_key, key_of(&s, 1));
+        // Several addresses, a limit, and nothing for none.
+        assert_eq!(s.threads_with(&["ana@x.org".into(), "banana@x.org".into()], 50).unwrap().len(), 3);
+        assert_eq!(s.threads_with(&["ana@x.org".into()], 1).unwrap().len(), 1);
+        assert!(s.threads_with(&[], 50).unwrap().is_empty());
+        assert!(s.threads_with(&["not an address".into()], 50).unwrap().is_empty());
+        // Deleted mail isn't listed.
+        s.conn.execute("INSERT INTO folders (account_id, name, raw_name, special) VALUES (?1, 'Trash', 'Trash', 'trash')", [a]).unwrap();
+        s.conn.execute("UPDATE messages SET folder = 'Trash' WHERE message_id = 'b@x'", []).unwrap();
+        assert_eq!(s.threads_with(&["ana@x.org".into()], 50).unwrap().len(), 1);
     }
 
     #[test]

@@ -500,6 +500,7 @@ export async function openSettings(start = "general") {
         </section>
 
         <section class="pivot form" data-k="about">
+          <div class="about"></div>
           <h3>Updates</h3>
           <p class="muted small">Carteiro ${upd.current}. Updates come from Carteiro's GitHub releases, must carry the release signature and pass the virus scan before they're installed.</p>
           <label class="check"><input type="checkbox" name="auto-update" ${app.auto_update ? "checked" : ""} ${upd.enabled ? "" : "disabled"} data-change="app-autosave" /> Download and install updates automatically</label>
@@ -508,8 +509,7 @@ export async function openSettings(start = "general") {
             <button class="btn" data-click="update-check" ${upd.enabled ? "" : "disabled"}>Check now</button>
             <button class="btn primary" data-click="update-install" ${upd.available ? "" : "hidden"}>${upd.ready ? "Restart to update" : "Get update"}</button>
           </div>
-          <h3>About</h3>
-          <div class="about"></div>
+          <div class="about about-licenses"></div>
         </section>
       </div>
     </div>
@@ -542,6 +542,32 @@ document.addEventListener("scroll", (e) => {
   const i = Math.round(box.scrollLeft / box.clientWidth);
   if (PIVOTS[i]) markPivot(PIVOTS[i][0]);
 }, true);
+// Swiping past the last section comes back to the first, and back from the
+// first goes to the last (scrolling itself stops at the ends).
+let pivotTouch = null;
+document.addEventListener("touchstart", (e) => {
+  const box = e.target.closest?.("#modal .pivots");
+  pivotTouch = box && e.touches.length === 1 ? { box, x: e.touches[0].clientX, y: e.touches[0].clientY, left: box.scrollLeft } : null;
+}, { passive: true });
+// Pushing past an end is ours: the browser mustn't take it for its own
+// swipe back (WebView2 on touch screens does) and leave Settings.
+document.addEventListener("touchmove", (e) => {
+  const t = pivotTouch;
+  if (!t || e.touches.length !== 1) return;
+  const dx = e.touches[0].clientX - t.x, dy = e.touches[0].clientY - t.y;
+  const max = t.box.scrollWidth - t.box.clientWidth;
+  if (Math.abs(dx) > Math.abs(dy) && ((dx > 0 && t.box.scrollLeft <= 2) || (dx < 0 && t.box.scrollLeft >= max - 2))) e.preventDefault();
+}, { passive: false });
+document.addEventListener("touchend", (e) => {
+  const t = pivotTouch;
+  pivotTouch = null;
+  if (!t || e.target.closest?.("input[type=range], textarea, select")) return;
+  const dx = e.changedTouches[0].clientX - t.x, dy = e.changedTouches[0].clientY - t.y;
+  if (Math.abs(dx) < 60 || Math.abs(dx) < 2 * Math.abs(dy)) return;
+  const max = t.box.scrollWidth - t.box.clientWidth;
+  if (dx < 0 && t.left >= max - 2) showPivot(PIVOTS[0][0]);
+  else if (dx > 0 && t.left <= 2) showPivot(PIVOTS[PIVOTS.length - 1][0]);
+}, { passive: true });
 document.addEventListener("keydown", (e) => {
   if (!$("#modal .settings") || !["ArrowLeft", "ArrowRight"].includes(e.key) || e.target.closest("input, select, textarea")) return;
   const cur = PIVOTS.findIndex(([k]) => k === $("#modal .pivot-titles .on")?.dataset.k);
@@ -555,9 +581,29 @@ async function renderAbout(version) {
   let lic;
   try { lic = await (await fetch("licenses.json")).json(); } catch { return; }
   const row = (c) => html`<li><button class="linkish" data-click="open-url" data-url="${c.url}">${c.name}</button> ${c.version} <span class="muted">· ${c.license}${c.note ? ` · ${c.note}` : ""}</span></li>`;
-  put("#modal .about", html`
-    <p><strong>${lic.app.name} ${version}</strong>, free software under the ${lic.app.license} license.
-      <button class="linkish" data-click="open-url" data-url="${lic.app.url}">Source code on GitHub</button></p>
+  const repo = lic.app.url.replace(/\/$/, "");
+  const link = (url, label) => html`<button class="btn" data-click="open-url" data-url="${url}">${label}</button>`;
+  put("#modal .about:not(.about-licenses)", html`
+    <div class="about-head">
+      <img src="logo.svg" alt="" width="72" height="72" />
+      <div>
+        <h2>${lic.app.name}</h2>
+        <p class="muted">Version ${version}</p>
+      </div>
+    </div>
+    <p>Email, calendar and contacts in one app, for Windows, Linux and Android. Every message and attachment is
+      checked by ClamAV before it's shown, remote images and trackers are blocked, and no script in an email ever runs.</p>
+    <p class="muted small">"Carteiro" is Portuguese for postman. Free software under the ${lic.app.license} license:
+      you may use, study, share and change it.</p>
+    <div class="btn-row wrap">
+      ${link(repo, "Source code on GitHub")}
+      ${link(`${repo}/issues`, "Report a problem")}
+      ${link(`${repo}/releases`, "Releases")}
+      ${link(`${repo}/blob/master/docs/USER-GUIDE.md`, "User guide")}
+      ${link(`${repo}/blob/master/SECURITY.md`, "Security")}
+    </div>`);
+  put("#modal .about-licenses", html`
+    <h3>Licenses</h3>
     <p class="muted small">It's built with these components, each under its own license:</p>
     <ul class="licenses">${lic.bundled.map(row)}</ul>
     <details><summary>${lic.crates.length} Rust libraries (Windows, Linux and Android builds together, including build tools)</summary>

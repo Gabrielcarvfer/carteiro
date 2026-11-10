@@ -10,7 +10,7 @@ use mail_core::ops::{self, Draft, Flag, MessageView};
 use mail_core::presets::{self, Preset};
 use mail_core::rules::Rule;
 use mail_core::scan::ScannerConfig;
-use mail_core::store::{FolderInfo, Store, ThreadSummary};
+use mail_core::store::{ContactThread, FolderInfo, Store, ThreadSummary};
 use mail_core::sync::{self, SyncReport};
 use mail_core::calendar;
 use mail_core::ical::Event;
@@ -1081,6 +1081,12 @@ struct EventSource {
 }
 
 /// The mail a meeting from an invitation came from (oldest first).
+/// A contact's conversations, newest first.
+#[tauri::command]
+fn contact_threads(state: State<'_, AppState>, emails: Vec<String>) -> Res<Vec<ContactThread>> {
+    lock(&state)?.threads_with(&emails, 100).map_err(err)
+}
+
 #[tauri::command]
 fn event_sources(state: State<'_, AppState>, event_id: i64) -> Res<Vec<EventSource>> {
     let st = lock(&state)?;
@@ -1759,6 +1765,7 @@ pub fn run() {
             invite_stats,
             set_charging,
             event_sources,
+            contact_threads,
             invite_diagnostics,
             send_rsvp,
             set_utc_offset,

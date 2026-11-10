@@ -276,6 +276,19 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 860, false], ["phone", 39
     await click(".ask [data-ask=yes]"); await sleep(500);
     expect(await js(`document.querySelectorAll(".ct-item").length`) === n - 1, "not deleted");
   });
+  await test("contacts: a contact's conversations, opened in mail", async () => {
+    await page(w, h, mobile);
+    await click("[data-mode=contacts]"); await sleep(800);
+    await clickText(".ct-item", "Ana Souza"); await sleep(600);
+    const rows = await js(`[...document.querySelectorAll(".ct-thread")].map((b) => b.textContent.replace(/\\s+/g, " ").trim())`);
+    expect(rows.length >= 1 && rows.some((r) => r.includes("Q3 planning")), `conversations: ${rows}`);
+    expect(await js(`!document.querySelector(".ct-threads")?.textContent.includes("Loading")`), "still loading");
+    const bar = await js(`(() => { const r = document.querySelector(".ct-detail .toolbar").getBoundingClientRect(), d = document.querySelector(".ct-detail").getBoundingClientRect(); return [r.left - d.left, d.right - r.right]; })()`);
+    expect(Math.abs(bar[0]) < 1 && Math.abs(bar[1]) < 1, `contact bar doesn't span the width: gaps ${bar}`);
+    await click(".ct-thread"); await sleep(1000);
+    expect(await js(`document.querySelector("[data-mode=mail]").classList.contains("on") || document.body.dataset.mode === "mail" || !document.querySelector("#contacts")?.offsetParent`), "didn't switch to mail");
+    expect(/Q3 planning/.test(await js(`document.querySelector("#reader").textContent`)), "conversation not opened");
+  });
 
   await page(w, h, mobile);
   await test("settings: four sections, swiped and tapped", async () => {
@@ -288,6 +301,34 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 860, false], ["phone", 39
     expect(await js(`document.querySelector("#modal .pivot-titles .on").textContent`) === "about", "tap didn't change section");
     expect(await js(`!document.querySelector("#modal [name=g-id]")`), "OAuth fields still there");
     expect(await js(`document.querySelectorAll("#modal [name=work-day]:checked").length`) === 5, "working days not Mon-Fri");
+  });
+  await test("settings: arrows and swipes wrap around", async () => {
+    const on = () => js(`document.querySelector("#modal .pivot-titles .on").textContent`);
+    await click("[data-click=pivot][data-k=about]"); await sleep(800);
+    await js(`document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }))`); await sleep(800);
+    expect(await on() === "general", `right from the last: ${await on()}`);
+    await js(`document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }))`); await sleep(800);
+    expect(await on() === "about", `left from the first: ${await on()}`);
+    if (!mobile) return;
+    const [x, y, wd] = await js(`(() => { const r = document.querySelector("#modal .pivots").getBoundingClientRect(); return [r.left + r.width / 2, r.top + 120, r.width]; })()`);
+    const swipe = async (dx) => {
+      await touch("touchStart", x, y);
+      for (let i = 1; i <= 8; i++) { await touch("touchMove", x + (dx * i) / 8, y); await sleep(16); }
+      await touch("touchEnd"); await sleep(900);
+    };
+    await swipe(-wd * 0.6);
+    expect(await on() === "general", `swipe past the last: ${await on()}`);
+    await swipe(wd * 0.6);
+    expect(await on() === "about", `swipe back from the first: ${await on()}`);
+  });
+  await test("settings: about has the logo and links, text sizes are roomy", async () => {
+    await click("[data-click=pivot][data-k=about]"); await sleep(800);
+    expect(await js(`!!document.querySelector("#modal .about-head img[src='logo.svg']")?.naturalWidth`), "no logo");
+    const urls = await js(`[...document.querySelectorAll("#modal .about [data-click=open-url]")].map((b) => b.dataset.url)`);
+    expect(urls.includes("https://github.com/Gabrielcarvfer/carteiro"), `no repository link: ${urls.slice(0, 6)}`);
+    expect(urls.some((u) => u.endsWith("/issues")), "no issues link");
+    const pad = await js(`(() => { const s = getComputedStyle(document.querySelector("#modal .text-size .day span")); return [parseFloat(s.paddingLeft), parseFloat(s.paddingTop)]; })()`);
+    expect(pad[0] >= 16 && pad[1] >= 8, `text size buttons cramped: ${pad}`);
   });
   await test("sign-in buttons hidden when the build has no app IDs", async () => {
     expect(await js(`document.body.classList.contains("no-google") && document.body.classList.contains("no-microsoft")`), "not hidden");

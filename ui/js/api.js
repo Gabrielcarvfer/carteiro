@@ -116,6 +116,7 @@ export const api = {
   sendRsvp: (eventId) => call("send_rsvp", { eventId }),
   setCharging: (charging) => call("set_charging", { charging }),
   eventSources: (eventId) => call("event_sources", { eventId }),
+  contactThreads: (emails) => call("contact_threads", { emails }),
   removeSeries: (eventId, from, to) => call("remove_series", { eventId, from, to }),
   setRsvp: (eventId, rsvp) => call("set_rsvp", { eventId, rsvp }),
   setUtcOffset: () => call("set_utc_offset", { minutes: -new Date().getTimezoneOffset() }),
