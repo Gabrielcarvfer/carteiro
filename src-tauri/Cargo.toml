@@ -31,6 +31,11 @@ libc = "0.2"
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21"
 
+# Reloading the page if WebKit's web process dies (already in the tree
+# through wry).
+[target.'cfg(target_os = "linux")'.dependencies]
+webkit2gtk = "2.0"
+
 [target.'cfg(not(target_os = "linux"))'.dependencies]
 tauri-plugin-notification = "2"
 

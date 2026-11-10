@@ -60,12 +60,14 @@ CARTEIRO_TEST_CA=$PWD/.testmail/ca.pem \
   cargo test -p mail-core --test live_greenmail -- --ignored --test-threads=1
 CARTEIRO_CARDDAV_URL=http://127.0.0.1:5232/ \
   cargo test -p mail-core --test live_carddav -- --ignored  # a Radicale with alice/alice-pw
-cargo test -p carteiro --lib                           # app shell: backups, mail-check schedule
+cargo test -p carteiro --lib                           # app shell: backups, mail-check schedule, AppImage fonts
 node scripts/ui-test.mjs /path/to/chrome                 # interface, desktop and phone sizes (Node 22+)
 cargo test -p carteiro -- --ignored engine_detects_eicar # real ClamAV (after fetch-clamav.sh)
 ```
 
 **Android.** `scripts/build-clamav-android.sh arm64-v8a|x86_64`, then `cargo tauri android init`, `scripts/prepare-android.sh` and `cargo tauri android build`. Debug builds on the emulator reach the test server at `10.0.2.2`, which the test certificate covers. Since Android apps can't be given environment variables, copy the CA to the app's data folder as `test-ca.pem` (`adb run-as dev.carteiro.mail`). Release builds never read it.
+
+**Linux AppImage.** `scripts/fetch-clamav.sh linux-x64`, `scripts/fetch-appimage-tools.sh` and `scripts/fetch-emoji-font.sh`, then `cargo tauri build --bundles appimage`. The AppImage's WebKit (from the build system, Ubuntu 22.04) aborts drawing COLRv1 color fonts such as Fedora's emoji font, so in the AppImage Carteiro hides those and uses the bitmap Noto Color Emoji it brings (`src-tauri/appimage-fonts.conf`). `scripts/appimage-font-check.sh squashfs-root` checks an unpacked AppImage draws emoji in color without crashing; if WebKit's web process dies anyway, Carteiro reloads the page.
 
 The end-to-end tests use made-up accounts on a local server, never real ones. See [SECURITY.md](SECURITY.md) for the security tests.
 

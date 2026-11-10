@@ -101,6 +101,8 @@ jobs:
           key: appimage-tools-${{ hashFiles('scripts/fetch-appimage-tools.sh') }}
       - name: AppImage tools (pinned, checksum-verified)
         run: scripts/fetch-appimage-tools.sh
+      - name: Emoji font (pinned, checksum-verified)
+        run: scripts/fetch-emoji-font.sh
       - run: cargo tauri build --bundles appimage
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

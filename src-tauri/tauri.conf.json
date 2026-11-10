@@ -35,6 +35,13 @@
     ],
     "android": {
       "minSdkVersion": 28
+    },
+    "linux": {
+      "appimage": {
+        "files": {
+          "/usr/share/carteiro/fonts/NotoColorEmoji.ttf": "fonts/NotoColorEmoji.ttf"
+        }
+      }
     }
   }
 }

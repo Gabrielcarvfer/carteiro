@@ -1632,8 +1632,69 @@ fn storage_usage(state: State<'_, AppState>) -> Res<(u64, u64)> {
     lock(&state)?.attachment_usage().map_err(err)
 }
 
+/// The AppImage brings its own (older) WebKit but uses the system's fonts,
+/// and that WebKit aborts drawing COLRv1 color fonts such as Fedora's
+/// Noto-COLRv1 emoji: the page goes blank. Hide those font files from it
+/// (the rest of the system's font setup stays as it is).
+#[cfg(target_os = "linux")]
+const APPIMAGE_FONTS: &str = include_str!("../appimage-fonts.conf");
+
+/// Where to write that font setup, if it applies: only in the AppImage, not
+/// over a setup the user chose, and only in the user's private runtime folder.
+#[cfg(target_os = "linux")]
+fn appimage_fonts_path(appimage: bool, fontconfig_set: bool, runtime_dir: Option<&std::path::Path>) -> Option<std::path::PathBuf> {
+    if !appimage || fontconfig_set {
+        return None;
+    }
+    runtime_dir.filter(|d| d.is_dir()).map(|d| d.join("carteiro-fonts.conf"))
+}
+
+/// The font setup, with the AppImage's own emoji font folder filled in.
+#[cfg(target_os = "linux")]
+fn appimage_fonts_conf(appdir: Option<&std::path::Path>) -> String {
+    let xml_escape = |s: &str| s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+    match appdir {
+        Some(d) => APPIMAGE_FONTS.replace("@EMOJI_DIR@", &xml_escape(&d.join("usr/share/carteiro/fonts").to_string_lossy())),
+        None => APPIMAGE_FONTS.replace("  <dir>@EMOJI_DIR@</dir>\n", ""),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn appimage_fonts() {
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from);
+    let path = appimage_fonts_path(std::env::var_os("APPIMAGE").is_some(), std::env::var_os("FONTCONFIG_FILE").is_some(), runtime.as_deref());
+    if let Some(path) = path {
+        let appdir = std::env::var_os("APPDIR").map(std::path::PathBuf::from);
+        if std::fs::write(&path, appimage_fonts_conf(appdir.as_deref())).is_ok() {
+            std::env::set_var("FONTCONFIG_FILE", &path);
+        }
+    }
+}
+
+/// If WebKit's web process dies (a crash drawing some message), load the
+/// page again instead of leaving a blank window; not in a loop, though.
+#[cfg(target_os = "linux")]
+fn reload_on_crash(app: &tauri::App) {
+    use webkit2gtk::WebViewExt;
+    let Some(win) = app.get_webview_window("main") else { return };
+    let _ = win.with_webview(|w| {
+        let crashes = std::cell::RefCell::new(Vec::<std::time::Instant>::new());
+        w.inner().connect_web_process_terminated(move |view, reason| {
+            eprintln!("WebKit's web process ended ({reason:?})");
+            let mut c = crashes.borrow_mut();
+            c.retain(|t| t.elapsed() < Duration::from_secs(60));
+            c.push(std::time::Instant::now());
+            if c.len() <= 3 {
+                view.reload();
+            }
+        });
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "linux")]
+    appimage_fonts();
     let builder = tauri::Builder::default().plugin(navigation_guard());
     #[cfg(not(target_os = "linux"))]
     let builder = builder.plugin(tauri_plugin_notification::init());
@@ -1692,6 +1753,8 @@ pub fn run() {
             }
             #[cfg(desktop)]
             build_tray(app)?;
+            #[cfg(target_os = "linux")]
+            reload_on_crash(app);
 
             // Tell the UI when the scanner becomes ready, so messages opened
             // while it was starting can be shown properly.
@@ -1850,5 +1913,69 @@ mod schedule_tests {
         // Settings saved before working hours existed (old 3-minute default).
         let old: AppSettings = serde_json::from_str(r#"{"sync_minutes":3}"#).unwrap();
         assert_eq!(old.schedule_version, 0, "so the one-time upgrade runs");
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod appimage_font_tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn font_setup_only_in_the_appimage_and_never_over_the_users() {
+        let dir = std::env::temp_dir();
+        assert_eq!(appimage_fonts_path(true, false, Some(&dir)), Some(dir.join("carteiro-fonts.conf")));
+        assert_eq!(appimage_fonts_path(false, false, Some(&dir)), None, "system WebKit draws these fonts");
+        assert_eq!(appimage_fonts_path(true, true, Some(&dir)), None, "the user's own FONTCONFIG_FILE wins");
+        assert_eq!(appimage_fonts_path(true, false, None), None, "no private runtime folder");
+        assert_eq!(appimage_fonts_path(true, false, Some(Path::new("/nonexistent/run"))), None);
+    }
+
+    #[test]
+    fn font_setup_points_at_the_appimage_emoji_font() {
+        let conf = appimage_fonts_conf(Some(Path::new("/tmp/.mount_Carte&x")));
+        assert!(conf.contains("<dir>/tmp/.mount_Carte&amp;x/usr/share/carteiro/fonts</dir>"), "{conf}");
+        assert!(!appimage_fonts_conf(None).contains("@EMOJI_DIR@"));
+        assert!(!conf.contains("@EMOJI_DIR@"));
+    }
+
+    // Through fontconfig itself (where it's installed): the setup keeps the
+    // system's fonts and drops only COLRv1 files. A fake COLRv1 file proves it
+    // on machines without one.
+    #[test]
+    fn font_setup_hides_colrv1_files_only() {
+        if std::process::Command::new("fc-list").arg("--version").output().is_err() {
+            eprintln!("fc-list not installed: skipped");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("carteiro-fonts-{}", std::process::id()));
+        let fonts = dir.join("fonts");
+        std::fs::create_dir_all(&fonts).unwrap();
+        // Any real font, copied twice: once under a COLRv1 name.
+        let list = |conf: &Path| {
+            let out = std::process::Command::new("fc-list").arg("--format=%{file}\n").env("FONTCONFIG_FILE", conf).output().unwrap();
+            String::from_utf8_lossy(&out.stdout).lines().map(str::to_string).collect::<Vec<_>>()
+        };
+        let plain = dir.join("plain.conf");
+        std::fs::write(&plain, r#"<?xml version="1.0"?><fontconfig><include ignore_missing="yes">/etc/fonts/fonts.conf</include></fontconfig>"#).unwrap();
+        let Some(sample) = list(&plain).into_iter().find(|f| f.ends_with(".ttf") || f.ends_with(".otf")) else {
+            eprintln!("no system fonts: skipped");
+            return;
+        };
+        let ext = Path::new(&sample).extension().unwrap().to_str().unwrap().to_string();
+        std::fs::copy(&sample, fonts.join(format!("Sample.{ext}"))).unwrap();
+        std::fs::copy(&sample, fonts.join(format!("Sample-COLRv1.{ext}"))).unwrap();
+        let with_dir = |base: &str| base.replace("<fontconfig>", &format!("<fontconfig><dir>{}</dir><cachedir>{}</cachedir>", fonts.display(), dir.join("cache").display()));
+        std::fs::write(&plain, with_dir(&std::fs::read_to_string(&plain).unwrap())).unwrap();
+        let ours = dir.join("ours.conf");
+        std::fs::write(&ours, with_dir(&appimage_fonts_conf(None))).unwrap();
+
+        let before = list(&plain);
+        assert!(before.iter().any(|f| f.contains("Sample-COLRv1")), "the fake COLRv1 font should be visible normally");
+        let after = list(&ours);
+        assert!(!after.iter().any(|f| f.contains("COLRv1")), "COLRv1 files still listed: {:?}", after.iter().filter(|f| f.contains("COLRv1")).collect::<Vec<_>>());
+        assert!(after.iter().any(|f| f.ends_with(&format!("Sample.{ext}"))), "other fonts must stay");
+        assert!(after.len() + 2 >= before.len() - before.iter().filter(|f| f.contains("COLRv1")).count(), "system fonts lost: {} of {}", after.len(), before.len());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

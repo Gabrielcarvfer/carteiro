@@ -8,3 +8,4 @@ src-tauri/resources/clamav/
 # Private keys (e.g. the update signing key) never go into git.
 *.pem
 *.key
+src-tauri/fonts/
