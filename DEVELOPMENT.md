@@ -62,6 +62,7 @@ CARTEIRO_CARDDAV_URL=http://127.0.0.1:5232/ \
   cargo test -p mail-core --test live_carddav -- --ignored  # a Radicale with alice/alice-pw
 cargo test -p carteiro --lib                           # app shell: backups, mail-check schedule, AppImage fonts
 node scripts/ui-test.mjs /path/to/chrome                 # interface, desktop and phone sizes (Node 22+)
+node scripts/screenshots.mjs /path/to/chrome             # README screenshots from the mock data (needs ImageMagick)
 cargo test -p carteiro -- --ignored engine_detects_eicar # real ClamAV (after fetch-clamav.sh)
 ```
 
