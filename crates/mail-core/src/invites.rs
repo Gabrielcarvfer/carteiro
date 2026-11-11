@@ -162,6 +162,7 @@ fn apply(store: &mut Store, sender: &str, ics: &str, now: i64, by_hand: bool, ac
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
     use crate::message::Addr;
 
     fn mail(ics: &str, attach: bool) -> Vec<u8> {
@@ -497,6 +498,30 @@ mod tests {
         assert!(old.iter().all(|d| d.starts_with("2024")), "{old:?}");
         let stored: i64 = s.conn().query_row("SELECT COUNT(*) FROM events WHERE remote_id = 'old-24'", [], |r| r.get(0)).unwrap();
         assert!(stored > 100, "all kept, just not listed");
+
+        // The same meeting from another chain written 7 hours off (another
+        // time zone), both on: one shows a week. A daily meeting from one
+        // chain keeps all its days.
+        import(&mut s, 6, "ana@example.org", &mail(&ics("REQUEST", &weekly("partner-pt", "Partner sync", "20261104T220000Z", "FREQ=WEEKLY;COUNT=6").replace("DTEND:20261104T220000Z", "DTEND:20261104T230000Z")), false), now).unwrap();
+        import(&mut s, 7, "ana@example.org", &mail(&ics("REQUEST", &weekly("standup", "Standup", "20261102T150000Z", "FREQ=DAILY;COUNT=5")), false), now).unwrap();
+        let shown: Vec<_> = s.events_between(0, i64::MAX / 2).unwrap().into_iter().filter(|e| e.calendar_id == cal).collect();
+        let week = |t: i64| (t - 4 * 86400).div_euclid(7 * 86400);
+        let mut per_week: HashMap<i64, usize> = HashMap::new();
+        for e in shown.iter().filter(|e| e.event.title == "Partner sync") {
+            *per_week.entry(week(e.event.start)).or_default() += 1;
+        }
+        assert!(per_week.values().all(|&n| n == 1), "one a week: {per_week:?}");
+        assert!(shown.iter().filter(|e| e.event.title == "Partner sync" && !e.event.cancelled).all(|e| e.remote_id == "partner-on"), "the first chain");
+        assert_eq!(shown.iter().filter(|e| e.event.title == "Standup").count(), 5, "every day of a daily meeting");
+        // A meeting moved from Wednesday to Thursday within its chain: only
+        // Thursday shows that week.
+        let moved = "BEGIN:VEVENT\r\nUID:partner-on\r\nSEQUENCE:1\r\nSUMMARY:Partner sync\r\nRECURRENCE-ID:20261111T150000Z\r\nDTSTART:20261112T150000Z\r\nDTEND:20261112T160000Z\r\nORGANIZER:mailto:ana@example.org\r\nEND:VEVENT\r\n";
+        import(&mut s, 8, "ana@example.org", &mail(&ics("CANCEL", &moved.replace("DTSTART:20261112T150000Z", "DTSTART:20261111T150000Z").replace("DTEND:20261112T160000Z", "DTEND:20261111T160000Z")), false), now).unwrap();
+        import(&mut s, 9, "ana@example.org", &mail(&ics("REQUEST", &moved.replace("SEQUENCE:1", "SEQUENCE:2").replace("RECURRENCE-ID:20261111T150000Z\r\n", "")), false), now).ok();
+        let that_week: Vec<_> = s.events_between(at("20261109T000000Z"), at("20261116T000000Z")).unwrap().into_iter()
+            .filter(|e| e.calendar_id == cal && e.event.title == "Partner sync").map(|e| (crate::ical::fmt_date(e.event.start), e.event.cancelled)).collect();
+        assert_eq!(that_week.len(), 1, "one a week: {that_week:?}");
+        assert!(!that_week[0].1, "the one on: {that_week:?}");
     }
 
     #[test]

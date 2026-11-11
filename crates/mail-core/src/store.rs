@@ -1996,58 +1996,86 @@ impl Store {
     }
 
     /// The Invitations calendar collects every email about a meeting, so
-    /// the same meeting piles up: two invitations for it, copies from other
-    /// senders, and the dates updates dropped (kept, cancelled). Shown:
-    /// - one per title, start and end (the one you answered, else one not
-    ///   cancelled, else the first sender's, else the oldest);
-    /// - cancelled dates only in weeks where no date with that title is on,
-    ///   and only within 8 weeks after the last date with that title that
-    ///   was on, or its first date if none ever was (a series cancelled
-    ///   long ago doesn't repeat for years).
+    /// the same meeting piles up: several invitations for it (each its own
+    /// chain of emails, sometimes in other time zones), copies from other
+    /// senders, and the dates updates dropped (kept, cancelled). Shown, week
+    /// by week and title by title, only one chain's dates: one with a date
+    /// that's on (one you answered first), and then only its dates that are
+    /// on; else one cancelled chain, and only its first date that week. And
+    /// cancelled dates only within 8 weeks after the last date with that
+    /// title that was on, or its first date if none ever was (a series
+    /// cancelled long ago doesn't repeat for years).
     ///
-    /// Nothing is deleted, so rescans can't bring copies back.
+    /// Chosen from the whole calendar, so every view agrees. Nothing is
+    /// deleted, so rescans can't bring copies back.
     fn one_per_meeting(&self, events: Vec<StoredEvent>) -> Result<Vec<StoredEvent>> {
         let Some(cal) = self.conn.query_row("SELECT id FROM calendars WHERE remote_id = 'invitations' LIMIT 1", [], |r| r.get::<_, i64>(0)).optional()? else {
             return Ok(events);
         };
         const WEEK: i64 = 7 * 86400;
-        let title = |e: &StoredEvent| e.event.title.trim().to_lowercase();
+        let norm = |t: &str| t.trim().to_lowercase();
         // Weeks counted from a Monday (1970-01-05).
         let week = |t: i64| (t - 4 * 86400).div_euclid(WEEK);
-        // Every date that's on, by title, from the whole calendar (the
-        // window asked for may not include the last one before it).
-        let mut on: HashMap<String, Vec<i64>> = HashMap::new();
-        let mut first: HashMap<String, i64> = HashMap::new();
-        {
-            let mut st = self.conn.prepare_cached("SELECT lower(trim(title)), start, cancelled FROM events WHERE calendar_id = ?1 ORDER BY start")?;
-            for row in st.query_map([cal], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, bool>(2)?)))? {
-                let (t, start, cancelled) = row?;
-                first.entry(t.clone()).or_insert(start);
-                if !cancelled {
-                    on.entry(t).or_default().push(start);
-                }
+        struct Row {
+            title: String,
+            start: i64,
+            cancelled: bool,
+            chain: String,
+            answered: bool,
+            id: i64,
+        }
+        let rows: Vec<Row> = {
+            let mut st = self.conn.prepare_cached("SELECT title, start, cancelled, remote_id, rsvp != '', id FROM events WHERE calendar_id = ?1 ORDER BY start")?;
+            let rows = st
+                .query_map([cal], |r| Ok(Row { title: norm(&r.get::<_, String>(0)?), start: r.get(1)?, cancelled: r.get(2)?, chain: r.get(3)?, answered: r.get(4)?, id: r.get(5)? }))?
+                .collect::<rusqlite::Result<_>>()?;
+            rows
+        };
+        // Dates that are on, by title; and each title's first date.
+        let mut on: HashMap<&str, Vec<i64>> = HashMap::new();
+        let mut first: HashMap<&str, i64> = HashMap::new();
+        for r in &rows {
+            first.entry(&r.title).or_insert(r.start);
+            if !r.cancelled {
+                on.entry(&r.title).or_default().push(r.start);
             }
         }
-        let shown_cancelled = |e: &StoredEvent| {
-            let t = title(e);
-            let Some(starts) = on.get(&t) else {
-                // Never on (only a cancellation arrived): its first weeks.
-                return first.get(&t).is_some_and(|&f| e.event.start - f <= 8 * WEEK);
-            };
-            let same_week = starts.iter().any(|&s| week(s) == week(e.event.start));
-            let last_before = starts.iter().copied().filter(|&s| s <= e.event.start).max();
-            !same_week && last_before.is_some_and(|s| e.event.start - s <= 8 * WEEK)
+        let cancelled_shown = |title: &str, start: i64| match on.get(title) {
+            None => first.get(title).is_some_and(|&f| start - f <= 8 * WEEK),
+            Some(starts) => starts.iter().copied().filter(|&s| s <= start).max().is_some_and(|s| start - s <= 8 * WEEK),
         };
-        // (title, start, end) → the id kept, and its rank (lower is better).
+        // Per (title, week): the winning chain. Rank, lower is better: has a
+        // date on, has an answer, the first sender's (not a copy), oldest.
         type Rank = (bool, bool, bool, i64);
-        let key = |e: &StoredEvent| (title(e), e.event.start, e.event.end);
-        let rank = |e: &StoredEvent| -> Rank { (e.rsvp.is_empty(), e.event.cancelled, e.remote_id.contains('#'), e.id) };
-        let mut best: HashMap<(String, i64, i64), (i64, Rank)> = HashMap::new();
-        for e in events.iter().filter(|e| e.calendar_id == cal && (!e.event.cancelled || shown_cancelled(e))) {
-            let r = rank(e);
-            best.entry(key(e)).and_modify(|b| if r < b.1 { *b = (e.id, r) }).or_insert((e.id, r));
+        let mut winner: HashMap<(&str, i64), (&str, Rank)> = HashMap::new();
+        for r in rows.iter().filter(|r| !r.cancelled || cancelled_shown(&r.title, r.start)) {
+            let rank: Rank = (r.cancelled, !r.answered, r.chain.contains('#'), r.id);
+            winner
+                .entry((&r.title, week(r.start)))
+                .and_modify(|w| if rank < w.1 { *w = (&r.chain, rank) })
+                .or_insert((&r.chain, rank));
         }
-        Ok(events.into_iter().filter(|e| e.calendar_id != cal || best.get(&key(e)).is_some_and(|b| b.0 == e.id)).collect())
+        // Within that chain's week: the dates on; if none, its first
+        // cancelled one (a moved meeting's old date isn't listed beside it).
+        let mut first_cancelled: HashMap<(&str, i64), i64> = HashMap::new();
+        for r in rows.iter().filter(|r| r.cancelled && cancelled_shown(&r.title, r.start)) {
+            let k = (r.title.as_str(), week(r.start));
+            if winner.get(&k).is_some_and(|w| w.0 == r.chain) {
+                first_cancelled.entry(k).or_insert(r.id);
+            }
+        }
+        let keep = |e: &StoredEvent| {
+            let t = norm(&e.event.title);
+            let k = (t.as_str(), week(e.event.start));
+            let Some(w) = winner.get(&k) else { return false };
+            if w.0 != e.remote_id {
+                return false;
+            }
+            // w.1.0: the winner's best date is cancelled (none on that week).
+            if !e.event.cancelled { true } else { w.1 .0 && first_cancelled.get(&k) == Some(&e.id) }
+        };
+        let keep: Vec<bool> = events.iter().map(|e| e.calendar_id != cal || keep(e)).collect();
+        Ok(events.into_iter().zip(keep).filter_map(|(e, k)| k.then_some(e)).collect())
     }
 
     /// Events in visible calendars whose title, location or description
