@@ -221,12 +221,12 @@ async fn scanner_on_demand(app: &AppHandle, s: &AppState) {
 }
 
 #[tauri::command]
-fn list_accounts(state: State<'_, AppState>) -> Res<Vec<Account>> {
+async fn list_accounts(state: State<'_, AppState>) -> Res<Vec<Account>> {
     lock(&state)?.list_accounts().map_err(err)
 }
 
 #[tauri::command]
-fn guess_settings(email: String) -> Preset {
+async fn guess_settings(email: String) -> Preset {
     presets::guess(&email)
 }
 
@@ -258,7 +258,7 @@ async fn update_account(state: State<'_, AppState>, account: Account, password: 
 }
 
 #[tauri::command]
-fn remove_account(state: State<'_, AppState>, account_id: i64) -> Res<()> {
+async fn remove_account(state: State<'_, AppState>, account_id: i64) -> Res<()> {
     let st = lock(&state)?;
     secrets::delete(&st, &secrets::password_key(account_id))?;
     secrets::delete(&st, &format!("oauth-acct-{account_id}"))?;
@@ -273,12 +273,12 @@ async fn sync_account(state: State<'_, AppState>, account_id: i64) -> Res<SyncRe
 }
 
 #[tauri::command]
-fn list_folders(state: State<'_, AppState>, account_id: i64) -> Res<Vec<FolderInfo>> {
+async fn list_folders(state: State<'_, AppState>, account_id: i64) -> Res<Vec<FolderInfo>> {
     lock(&state)?.list_folders(account_id).map_err(err)
 }
 
 #[tauri::command]
-fn list_threads(state: State<'_, AppState>, account_id: i64, folder: String, query: Option<String>, offset: u32, limit: Option<u32>) -> Res<Vec<ThreadSummary>> {
+async fn list_threads(state: State<'_, AppState>, account_id: i64, folder: String, query: Option<String>, offset: u32, limit: Option<u32>) -> Res<Vec<ThreadSummary>> {
     lock(&state)?.list_threads(account_id, &folder, query.as_deref(), limit.unwrap_or(100).clamp(1, 5000), offset).map_err(err)
 }
 
@@ -293,7 +293,7 @@ struct UnifiedThread {
 
 /// Every account's inbox merged into one list, newest first.
 #[tauri::command]
-fn list_unified(state: State<'_, AppState>, query: Option<String>) -> Res<Vec<UnifiedThread>> {
+async fn list_unified(state: State<'_, AppState>, query: Option<String>) -> Res<Vec<UnifiedThread>> {
     let st = lock(&state)?;
     let mut out = Vec::new();
     for a in st.list_accounts().map_err(err)? {
@@ -358,24 +358,24 @@ async fn send_message(state: State<'_, AppState>, account_id: i64, draft: Draft)
 }
 
 #[tauri::command]
-fn list_rules(state: State<'_, AppState>) -> Res<Vec<Rule>> {
+async fn list_rules(state: State<'_, AppState>) -> Res<Vec<Rule>> {
     lock(&state)?.list_rules().map_err(err)
 }
 
 #[tauri::command]
-fn save_rule(state: State<'_, AppState>, rule: Rule) -> Res<Rule> {
+async fn save_rule(state: State<'_, AppState>, rule: Rule) -> Res<Rule> {
     let mut rule = rule;
     lock(&state)?.save_rule(&mut rule).map_err(err)?;
     Ok(rule)
 }
 
 #[tauri::command]
-fn delete_rule(state: State<'_, AppState>, id: i64) -> Res<()> {
+async fn delete_rule(state: State<'_, AppState>, id: i64) -> Res<()> {
     lock(&state)?.delete_rule(id).map_err(err)
 }
 
 #[tauri::command]
-fn reorder_rules(state: State<'_, AppState>, ids: Vec<i64>) -> Res<()> {
+async fn reorder_rules(state: State<'_, AppState>, ids: Vec<i64>) -> Res<()> {
     lock(&state)?.reorder_rules(&ids).map_err(err)
 }
 
@@ -457,7 +457,7 @@ async fn update_trackers_inner(app: &AppHandle) -> Res<()> {
 }
 
 #[tauri::command]
-fn tracker_status(app: AppHandle) -> TrackerStatus {
+async fn tracker_status(app: AppHandle) -> TrackerStatus {
     tracker_status_of(&app)
 }
 
@@ -478,12 +478,12 @@ async fn check_update(app: AppHandle) -> Res<updater::Status> {
 }
 
 #[tauri::command]
-fn install_update(app: AppHandle) -> Res<()> {
+async fn install_update(app: AppHandle) -> Res<()> {
     updater::install_now(&app)
 }
 
 #[tauri::command]
-fn set_scanner(state: State<'_, AppState>, config: ScannerConfig) -> Res<()> {
+async fn set_scanner(state: State<'_, AppState>, config: ScannerConfig) -> Res<()> {
     let json = serde_json::to_string(&config).map_err(err)?;
     lock(&state)?.set_secret("scanner_config", &json).map_err(err)?;
     *state.scanner.lock().map_err(|_| "lock poisoned")? = config;
@@ -501,7 +501,7 @@ fn get_settings(state: State<'_, AppState>) -> AppSettings {
 }
 
 #[tauri::command]
-fn set_settings(state: State<'_, AppState>, config: AppSettings) -> Res<()> {
+async fn set_settings(state: State<'_, AppState>, config: AppSettings) -> Res<()> {
     let mut config = config;
     config.sync_minutes = config.sync_minutes.clamp(5, 240);
     config.off_hours_minutes = if config.off_hours_minutes == 0 { 0 } else { config.off_hours_minutes.clamp(15, 24 * 60) };
@@ -918,7 +918,7 @@ fn is_openable(url: &str) -> bool {
 
 /// A link clicked in a message: opened in the system browser.
 #[tauri::command]
-fn open_link(url: String) -> Res<()> {
+async fn open_link(url: String) -> Res<()> {
     open_browser(&url)
 }
 
@@ -1058,7 +1058,7 @@ async fn sync_contacts_inner(s: &AppState) -> Vec<String> {
 /// The phone's address book, read by the Android activity and mirrored
 /// here as "Phone contacts" (read-only; change them in the phone's app).
 #[tauri::command]
-fn sync_phone_contacts(state: State<'_, AppState>, contacts: Vec<(String, Contact)>) -> Res<usize> {
+async fn sync_phone_contacts(state: State<'_, AppState>, contacts: Vec<(String, Contact)>) -> Res<usize> {
     let mut st = lock(&state)?;
     let source = match st.contact_sources().map_err(err)?.into_iter().find(|s| s.kind == "android") {
         Some(s) => s.id,
@@ -1098,12 +1098,12 @@ struct EventSource {
 /// The mail a meeting from an invitation came from (oldest first).
 /// A contact's conversations, newest first.
 #[tauri::command]
-fn contact_threads(state: State<'_, AppState>, emails: Vec<String>) -> Res<Vec<ContactThread>> {
+async fn contact_threads(state: State<'_, AppState>, emails: Vec<String>) -> Res<Vec<ContactThread>> {
     lock(&state)?.threads_with(&emails, 100).map_err(err)
 }
 
 #[tauri::command]
-fn event_sources(state: State<'_, AppState>, event_id: i64) -> Res<Vec<EventSource>> {
+async fn event_sources(state: State<'_, AppState>, event_id: i64) -> Res<Vec<EventSource>> {
     let st = lock(&state)?;
     let Some(ev) = st.event(event_id).map_err(err)? else { return Ok(Vec::new()) };
     if ev.remote_id.is_empty() {
@@ -1123,7 +1123,7 @@ fn event_sources(state: State<'_, AppState>, event_id: i64) -> Res<Vec<EventSour
 /// For diagnosis: the shapes (no contents) of calendar parts in up to
 /// `limit` messages whose calendar file wasn't readable.
 #[tauri::command]
-fn invite_diagnostics(state: State<'_, AppState>, limit: u32) -> Res<Vec<serde_json::Value>> {
+async fn invite_diagnostics(state: State<'_, AppState>, limit: u32) -> Res<Vec<serde_json::Value>> {
     let st = lock(&state)?;
     let ids = st.unreadable_invite_msgs(limit).map_err(err)?;
     let mut out = Vec::new();
@@ -1137,19 +1137,19 @@ fn invite_diagnostics(state: State<'_, AppState>, limit: u32) -> Res<Vec<serde_j
 
 /// How messages carrying calendar files fared (counts per outcome).
 #[tauri::command]
-fn invite_stats(state: State<'_, AppState>) -> Res<Vec<(String, i64)>> {
+async fn invite_stats(state: State<'_, AppState>) -> Res<Vec<(String, i64)>> {
     lock(&state)?.invite_stats().map_err(err)
 }
 
 /// Removes dates of a repeating event laid out on this device (invitations):
 /// those starting in [from, to), or all of them when both are absent.
 #[tauri::command]
-fn remove_series(state: State<'_, AppState>, event_id: i64, from: Option<i64>, to: Option<i64>) -> Res<usize> {
+async fn remove_series(state: State<'_, AppState>, event_id: i64, from: Option<i64>, to: Option<i64>) -> Res<usize> {
     lock(&state)?.remove_series_range(event_id, from, to).map_err(err)
 }
 
 #[tauri::command]
-fn set_rsvp(state: State<'_, AppState>, event_id: i64, rsvp: String) -> Res<()> {
+async fn set_rsvp(state: State<'_, AppState>, event_id: i64, rsvp: String) -> Res<()> {
     lock(&state)?.set_rsvp(event_id, &rsvp).map_err(err)
 }
 
@@ -1159,24 +1159,24 @@ async fn sync_contacts(state: State<'_, AppState>) -> Res<Vec<String>> {
 }
 
 #[tauri::command]
-fn list_contacts(state: State<'_, AppState>, query: String) -> Res<Vec<StoredContact>> {
+async fn list_contacts(state: State<'_, AppState>, query: String) -> Res<Vec<StoredContact>> {
     lock(&state)?.list_contacts(&query, 5000).map_err(err)
 }
 
 #[tauri::command]
-fn save_contact(state: State<'_, AppState>, id: Option<i64>, contact: Contact) -> Res<i64> {
+async fn save_contact(state: State<'_, AppState>, id: Option<i64>, contact: Contact) -> Res<i64> {
     let c = contact.normalized().ok_or("A contact needs a name, an email address or a phone number")?;
     lock(&state)?.save_contact(id, &c).map_err(err)
 }
 
 #[tauri::command]
-fn delete_contact(state: State<'_, AppState>, id: i64) -> Res<()> {
+async fn delete_contact(state: State<'_, AppState>, id: i64) -> Res<()> {
     lock(&state)?.delete_contact(id).map_err(err)
 }
 
 /// Imports a vCard, CSV (Google / Outlook / Thunderbird) or LDIF file.
 #[tauri::command]
-fn import_contacts(state: State<'_, AppState>, text: String) -> Res<ContactImport> {
+async fn import_contacts(state: State<'_, AppState>, text: String) -> Res<ContactImport> {
     let list = contacts::parse_any(&text);
     if list.is_empty() {
         return Err("No contacts found in this file (vCard, CSV or LDIF expected)".into());
@@ -1186,7 +1186,7 @@ fn import_contacts(state: State<'_, AppState>, text: String) -> Res<ContactImpor
 
 /// All contacts as one vCard file in Downloads/Carteiro.
 #[tauri::command]
-fn export_contacts(app: AppHandle, state: State<'_, AppState>, stamp_local: Option<String>) -> Res<String> {
+async fn export_contacts(app: AppHandle, state: State<'_, AppState>, stamp_local: Option<String>) -> Res<String> {
     let all = lock(&state)?.list_contacts("", u32::MAX).map_err(err)?;
     let text: String = all.iter().map(|c| contacts::to_vcard(&c.contact)).collect();
     let path = export_dir(&app)?.join(format!("Carteiro contacts {}.vcf", stamp(stamp_local.as_deref())));
@@ -1196,7 +1196,7 @@ fn export_contacts(app: AppHandle, state: State<'_, AppState>, stamp_local: Opti
 }
 
 #[tauri::command]
-fn list_contact_sources(state: State<'_, AppState>) -> Res<Vec<ContactSource>> {
+async fn list_contact_sources(state: State<'_, AppState>) -> Res<Vec<ContactSource>> {
     let st = lock(&state)?;
     st.ensure_local_contacts().map_err(err)?;
     st.contact_sources().map_err(err)
@@ -1219,39 +1219,39 @@ async fn add_carddav_contacts(state: State<'_, AppState>, url: String, username:
 }
 
 #[tauri::command]
-fn remove_contact_source(state: State<'_, AppState>, id: i64) -> Res<()> {
+async fn remove_contact_source(state: State<'_, AppState>, id: i64) -> Res<()> {
     lock(&state)?.remove_contact_source(id).map_err(err)
 }
 
 #[tauri::command]
-fn suggest_addresses(state: State<'_, AppState>, prefix: String) -> Res<Vec<(String, String)>> {
+async fn suggest_addresses(state: State<'_, AppState>, prefix: String) -> Res<Vec<(String, String)>> {
     lock(&state)?.suggest_addresses(&prefix, 8).map_err(err)
 }
 
 // ---- calendar -------------------------------------------------------------------------
 
 #[tauri::command]
-fn list_calendars(state: State<'_, AppState>) -> Res<Vec<CalendarInfo>> {
+async fn list_calendars(state: State<'_, AppState>) -> Res<Vec<CalendarInfo>> {
     lock(&state)?.calendars().map_err(err)
 }
 
 #[tauri::command]
-fn list_cal_sources(state: State<'_, AppState>) -> Res<Vec<CalSource>> {
+async fn list_cal_sources(state: State<'_, AppState>) -> Res<Vec<CalSource>> {
     lock(&state)?.cal_sources().map_err(err)
 }
 
 #[tauri::command]
-fn calendar_events(state: State<'_, AppState>, from: i64, to: i64) -> Res<Vec<StoredEvent>> {
+async fn calendar_events(state: State<'_, AppState>, from: i64, to: i64) -> Res<Vec<StoredEvent>> {
     lock(&state)?.events_between(from, to).map_err(err)
 }
 
 #[tauri::command]
-fn search_events(state: State<'_, AppState>, query: String) -> Res<Vec<StoredEvent>> {
+async fn search_events(state: State<'_, AppState>, query: String) -> Res<Vec<StoredEvent>> {
     lock(&state)?.search_events(&query, 200).map_err(err)
 }
 
 #[tauri::command]
-fn set_calendar_visible(state: State<'_, AppState>, calendar_id: i64, visible: bool) -> Res<()> {
+async fn set_calendar_visible(state: State<'_, AppState>, calendar_id: i64, visible: bool) -> Res<()> {
     lock(&state)?.set_calendar_visible(calendar_id, visible).map_err(err)
 }
 
@@ -1271,14 +1271,19 @@ async fn sync_calendars_inner(s: &AppState) -> Vec<String> {
     errors
 }
 
-/// Returns per-source errors (empty when everything synced). Also reads
-/// every checked email with a calendar file again (adding what's missing,
-/// never copies), and has mail not checked yet checked, so its invitations
-/// follow.
+/// Returns per-source errors (empty when everything synced). With
+/// `rescan`, also reads every checked email with a calendar file again
+/// (adding what's missing, never copies), and has mail not checked yet
+/// checked, so its invitations follow.
 #[tauri::command]
-async fn sync_calendars(app: AppHandle, state: State<'_, AppState>) -> Res<Vec<String>> {
+async fn sync_calendars(app: AppHandle, state: State<'_, AppState>, rescan: Option<bool>) -> Res<Vec<String>> {
     let s = state.inner();
     let errors = sync_calendars_inner(s).await;
+    // Reading every invitation again takes a while: only when asked (the
+    // sync button), not each time the calendar opens.
+    if rescan != Some(true) {
+        return Ok(errors);
+    }
     let store = s.store.clone();
     let read = tauri::async_runtime::spawn_blocking(move || ops::rescan_invites(&store)).await.map_err(err)?.map_err(err)?;
     eprintln!("calendar sync: read {read} emails with calendars again");
@@ -1346,7 +1351,7 @@ async fn add_ics_calendar(state: State<'_, AppState>, url: String, name: String)
 }
 
 #[tauri::command]
-fn add_local_calendar(state: State<'_, AppState>, name: String, color: String) -> Res<i64> {
+async fn add_local_calendar(state: State<'_, AppState>, name: String, color: String) -> Res<i64> {
     let st = lock(&state)?;
     let local = st.ensure_local_calendar().map_err(err)?;
     let src = st.calendar(local).map_err(err)?.ok_or("local calendar missing")?.source_id;
@@ -1355,12 +1360,12 @@ fn add_local_calendar(state: State<'_, AppState>, name: String, color: String) -
 }
 
 #[tauri::command]
-fn remove_local_calendar(state: State<'_, AppState>, calendar_id: i64) -> Res<()> {
+async fn remove_local_calendar(state: State<'_, AppState>, calendar_id: i64) -> Res<()> {
     lock(&state)?.delete_local_calendar(calendar_id).map_err(err)
 }
 
 #[tauri::command]
-fn remove_cal_source(state: State<'_, AppState>, source_id: i64) -> Res<()> {
+async fn remove_cal_source(state: State<'_, AppState>, source_id: i64) -> Res<()> {
     let st = lock(&state)?;
     secrets::delete(&st, &format!("cal-{source_id}"))?;
     secrets::delete(&st, &format!("oauth-src-{source_id}"))?;
@@ -1449,7 +1454,7 @@ async fn offline_all(app: &AppHandle, s: &AppState) -> Res<ops::OfflineReport> {
 /// "Download now" for the offline period in Settings: starts in the
 /// background (progress arrives as events) and returns at once.
 #[tauri::command]
-fn download_offline_now(app: AppHandle, state: State<'_, AppState>) -> Res<()> {
+async fn download_offline_now(app: AppHandle, state: State<'_, AppState>) -> Res<()> {
     if state.offline_running.load(Ordering::SeqCst) {
         return Err("Mail is already being downloaded for offline use".into());
     }
@@ -1464,7 +1469,7 @@ fn download_offline_now(app: AppHandle, state: State<'_, AppState>) -> Res<()> {
 /// The messages an action on a whole conversation touches: every copy in
 /// `folder`, or in all folders when it's None.
 #[tauri::command]
-fn thread_ids(state: State<'_, AppState>, account_id: i64, thread_key: String, folder: Option<String>) -> Res<Vec<i64>> {
+async fn thread_ids(state: State<'_, AppState>, account_id: i64, thread_key: String, folder: Option<String>) -> Res<Vec<i64>> {
     lock(&state)?.thread_message_ids(account_id, &thread_key, folder.as_deref()).map_err(err)
 }
 
@@ -1478,7 +1483,7 @@ struct SearchHits {
 
 /// Where a search matched inside one conversation.
 #[tauri::command]
-fn search_hits(state: State<'_, AppState>, account_id: i64, folder: String, thread_key: String, query: String) -> Res<SearchHits> {
+async fn search_hits(state: State<'_, AppState>, account_id: i64, folder: String, thread_key: String, query: String) -> Res<SearchHits> {
     let st = lock(&state)?;
     let ids = st.search_hits(account_id, &folder, &thread_key, &query).map_err(err)?;
     // The originals, not replies that only quote them or re-send their files.
@@ -1576,7 +1581,7 @@ async fn export_mail(app: AppHandle, state: State<'_, AppState>, stamp_local: Op
 }
 
 #[tauri::command]
-fn export_settings(app: AppHandle, state: State<'_, AppState>, ui: serde_json::Value, stamp_local: Option<String>) -> Res<String> {
+async fn export_settings(app: AppHandle, state: State<'_, AppState>, ui: serde_json::Value, stamp_local: Option<String>) -> Res<String> {
     let s = state.inner();
     let prefs = serde_json::json!({ "settings": settings(s), "scanner": s.scanner.lock().map(|c| c.clone()).unwrap_or_default(), "ui": ui });
     let data = mail_core::settings_io::export(&*lock(s)?, prefs, calendar::now()).map_err(err)?;
@@ -1593,7 +1598,7 @@ struct ImportResult {
 }
 
 #[tauri::command]
-fn import_settings(state: State<'_, AppState>, json: String) -> Res<ImportResult> {
+async fn import_settings(state: State<'_, AppState>, json: String) -> Res<ImportResult> {
     let s = state.inner();
     let data = mail_core::settings_io::parse(&json).map_err(err)?;
     let report = mail_core::settings_io::import(&*lock(s)?, &data).map_err(err)?;
@@ -1628,7 +1633,7 @@ async fn create_backup(app: AppHandle, state: State<'_, AppState>, folder: Optio
 /// the web view can't hand over a path, and Android's bridge carries text
 /// only). `first` starts a new upload.
 #[tauri::command]
-fn restore_upload(app: AppHandle, data: String, first: bool) -> Res<()> {
+async fn restore_upload(app: AppHandle, data: String, first: bool) -> Res<()> {
     use std::io::Write;
     let bytes = mail_core::b64::decode(&data).ok_or("damaged upload")?;
     let path = app.path().app_data_dir().map_err(err)?.join(backup::UPLOAD);
@@ -1662,7 +1667,7 @@ async fn restore_backup(app: AppHandle, state: State<'_, AppState>, passphrase: 
 }
 
 #[tauri::command]
-fn storage_usage(state: State<'_, AppState>) -> Res<(u64, u64)> {
+async fn storage_usage(state: State<'_, AppState>) -> Res<(u64, u64)> {
     lock(&state)?.attachment_usage().map_err(err)
 }
 
@@ -1705,6 +1710,51 @@ fn appimage_fonts() {
     }
 }
 
+/// An AppImage installs nothing, so GNOME (dock, app grid) shows a blank
+/// icon for its window. Like other AppImages, it adds its own launcher to
+/// your applications (~/.local/share/applications) on start, pointing at
+/// wherever the AppImage is, with its icon; rewritten only when that moves.
+#[cfg(target_os = "linux")]
+fn appimage_launcher() {
+    let (Some(appimage), Some(appdir)) = (std::env::var_os("APPIMAGE"), std::env::var_os("APPDIR")) else { return };
+    if !std::path::Path::new(&appimage).is_file() {
+        return;
+    }
+    let data = std::env::var_os("XDG_DATA_HOME").map(std::path::PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| std::path::Path::new(&h).join(".local/share")));
+    let Some(data) = data else { return };
+    let icon = data.join("icons/carteiro.png");
+    let entry = appimage_desktop_entry(std::path::Path::new(&appimage), &icon);
+    let file = data.join("applications/carteiro.desktop");
+    if std::fs::read_to_string(&file).ok().as_deref() == Some(entry.as_str()) {
+        return;
+    }
+    let _ = std::fs::create_dir_all(data.join("icons"));
+    let _ = std::fs::copy(std::path::Path::new(&appdir).join("Carteiro.png"), &icon);
+    let _ = std::fs::create_dir_all(data.join("applications"));
+    let _ = std::fs::write(&file, entry);
+}
+
+/// The launcher for an AppImage at `appimage` (any characters in its path
+/// are quoted as the desktop entry format asks).
+#[cfg(target_os = "linux")]
+fn appimage_desktop_entry(appimage: &std::path::Path, icon: &std::path::Path) -> String {
+    let path = appimage.to_string_lossy();
+    let mut quoted = String::from("\"");
+    for c in path.chars() {
+        if matches!(c, '"' | '`' | '$' | '\\') {
+            quoted.push('\\');
+        }
+        quoted.push(c);
+    }
+    quoted.push('"');
+    // In the file itself, a backslash is written twice (the format's escapes).
+    let exec = quoted.replace('\\', "\\\\");
+    format!(
+        "[Desktop Entry]\nType=Application\nName=Carteiro\nComment=Email, calendar and contacts\nExec={exec} %U\nIcon={}\nStartupWMClass=carteiro\nCategories=Network;Email;Office;Calendar;\nTerminal=false\n",
+        icon.display()
+    )
+}
+
 /// If WebKit's web process dies (a crash drawing some message), load the
 /// page again instead of leaving a blank window; not in a loop, though.
 #[cfg(target_os = "linux")]
@@ -1728,7 +1778,10 @@ fn reload_on_crash(app: &tauri::App) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(target_os = "linux")]
-    appimage_fonts();
+    {
+        appimage_fonts();
+        appimage_launcher();
+    }
     let builder = tauri::Builder::default().plugin(navigation_guard());
     #[cfg(not(target_os = "linux"))]
     let builder = builder.plugin(tauri_plugin_notification::init());
@@ -1963,6 +2016,19 @@ mod appimage_font_tests {
         assert_eq!(appimage_fonts_path(true, true, Some(&dir)), None, "the user's own FONTCONFIG_FILE wins");
         assert_eq!(appimage_fonts_path(true, false, None), None, "no private runtime folder");
         assert_eq!(appimage_fonts_path(true, false, Some(Path::new("/nonexistent/run"))), None);
+    }
+
+    #[test]
+    fn appimage_launcher_points_at_the_appimage_quoted() {
+        let icon = Path::new("/home/a/.local/share/icons/carteiro.png");
+        let e = appimage_desktop_entry(Path::new("/home/a/Downloads/carteiro-linux-appimage-ci-test (2)/Carteiro_0.1.0_amd64.AppImage"), icon);
+        assert!(e.contains("\nExec=\"/home/a/Downloads/carteiro-linux-appimage-ci-test (2)/Carteiro_0.1.0_amd64.AppImage\" %U\n"), "{e}");
+        assert!(e.contains("\nStartupWMClass=carteiro\n"), "GNOME matches the window by it");
+        assert!(e.contains("\nIcon=/home/a/.local/share/icons/carteiro.png\n"));
+        assert!(e.starts_with("[Desktop Entry]\n"));
+        // Characters the format reserves are escaped (and backslashes doubled).
+        let odd = appimage_desktop_entry(Path::new("/tmp/a\"b$c`d\\e/C.AppImage"), icon);
+        assert!(odd.contains(r#"Exec="/tmp/a\\"b\\$c\\`d\\\\e/C.AppImage" %U"#), "{odd}");
     }
 
     #[test]

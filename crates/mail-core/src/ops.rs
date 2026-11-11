@@ -83,15 +83,23 @@ pub fn rescan_invites(store: &Mutex<Store>) -> Result<usize> {
     rescan_invites_at(store, crate::calendar::now())
 }
 
-/// `rescan_invites` as if it were `now`.
+/// `rescan_invites` as if it were `now` (for mail without a date).
 pub fn rescan_invites_at(store: &Mutex<Store>, now: i64) -> Result<usize> {
     let ids = lock(store)?.clean_calendar_messages()?;
+    // Replayed as they arrived: each meeting's sequence starts over (the
+    // newest update would otherwise turn every older one away), and each
+    // email counts as of its own date.
+    lock(store)?.restart_invite_sequences()?;
     let mut changed = false;
     for &id in &ids {
         let mut st = lock(store)?;
         let (Some(m), Some(raw)) = (st.message(id)?, st.raw(id)?) else { continue };
         st.forget_invites(id)?;
-        changed |= crate::invites::import(&mut st, id, &m.from.email, &raw, now).is_ok_and(|t| !t.is_empty());
+        let at = if m.date > 0 { m.date } else { now };
+        changed |= crate::invites::import(&mut st, id, &m.from.email, &raw, at).is_ok_and(|t| !t.is_empty());
+        drop(st);
+        // Let anything waiting (the calendar, opening a message) go first.
+        std::thread::sleep(std::time::Duration::from_millis(2));
     }
     if changed {
         INVITES_CHANGED.store(true, std::sync::atomic::Ordering::Relaxed);

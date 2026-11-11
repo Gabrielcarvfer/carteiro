@@ -302,6 +302,14 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 860, false], ["phone", 39
     expect(await js(`document.querySelector("#contacts").hidden`), "Back from a mail conversation left mail");
   });
 
+  await test("calendar: opening it doesn't reread every invitation; the sync button does", async () => {
+    await page(w, h, mobile);
+    await js(`window.__calendarSyncs = []`);
+    await click("[data-mode=calendar]"); await sleep(1000);
+    expect(JSON.stringify(await js(`window.__calendarSyncs`)) === "[false]", `opening: ${JSON.stringify(await js(`window.__calendarSyncs`))}`);
+    await click("[data-click=cal-sync]"); await sleep(1000);
+    expect(JSON.stringify(await js(`window.__calendarSyncs`)) === "[false,true]", `button: ${JSON.stringify(await js(`window.__calendarSyncs`))}`);
+  });
   await page(w, h, mobile);
   await test("settings: four sections, swiped and tapped", async () => {
     await js(`document.querySelector("[data-click=settings]").click()`); await sleep(1000);

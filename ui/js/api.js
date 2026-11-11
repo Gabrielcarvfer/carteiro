@@ -138,7 +138,7 @@ export const api = {
   setUtcOffset: () => call("set_utc_offset", { minutes: -new Date().getTimezoneOffset() }),
   suggestAddresses: (prefix) => call("suggest_addresses", { prefix }),
   setCalendarVisible: (calendarId, visible) => call("set_calendar_visible", { calendarId, visible }),
-  syncCalendars: () => call("sync_calendars"),
+  syncCalendars: (rescan = false) => call("sync_calendars", { rescan }),
   addCaldav: (url, username, password, name) => call("add_caldav_source", { url, username, password, name }),
   removeCalSource: (sourceId) => call("remove_cal_source", { sourceId }),
   saveEvent: (calendarId, eventId, event) => call("save_event", { calendarId, eventId, event }),

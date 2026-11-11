@@ -199,11 +199,12 @@ async function load() {
   render();
 }
 
-async function sync() {
+// The sync button (rescan) also reads every invitation in your mail again.
+async function sync(rescan = false) {
   C.syncing = true;
   render();
   try {
-    const errors = await api.syncCalendars();
+    const errors = await api.syncCalendars(rescan);
     if (errors?.length) toast(errors[0]);
   } catch (e) {
     toast(String(e));
@@ -694,7 +695,7 @@ on("click", "cal-prev", () => step(-1));
 on("click", "cal-next", () => step(1));
 on("click", "cal-today", () => { C.keepWeek = null; C.anchor = startOfDay(new Date()); load(); });
 on("click", "cal-view", (el) => { C.keepWeek = null; C.view = el.dataset.view; load(); });
-on("click", "cal-sync", () => sync());
+on("click", "cal-sync", () => sync(true));
 on("click", "cal-goto", (el) => { C.anchor = new Date(+el.dataset.ts); closeDrawer(); load(); });
 on("click", "cal-goto-day", (el, e) => { e.stopPropagation(); C.anchor = new Date(+el.dataset.ts); C.view = "day"; load(); });
 on("change", "cal-visible", async (el) => { await api.setCalendarVisible(+el.dataset.id, el.checked); load(); });

@@ -420,6 +420,85 @@ mod tests {
         assert!(!v.iter().any(|t| t.0 == "20261123"), "the moved date isn't left behind: {v:?}");
     }
 
+    // A rescan replays a meeting's emails in arrival order, each as of its
+    // own date: the newest update's sequence doesn't turn the older ones
+    // away, and Monday's date comes back as it took place.
+    #[test]
+    fn rescan_replays_history() {
+        let s = Store::open_in_memory().unwrap();
+        let ep = crate::Endpoint { host: "h".into(), port: 993, security: crate::Security::Tls, allow_insecure: false };
+        let mut a = crate::Account {
+            id: 0, name: "Me".into(), email: "me@x.org".into(), username: "me".into(), incoming_protocol: crate::Protocol::Imap,
+            incoming: ep.clone(), smtp: ep, smtp_username: None, signature: String::new(), auth: crate::AuthMethod::Password,
+        };
+        s.add_account(&mut a).unwrap();
+        let at = |d: &str| crate::ical::parse_datetime(d).unwrap().0;
+        let base = "BEGIN:VEVENT\r\nUID:proj-1\r\nSEQUENCE:3\r\nSUMMARY:Project sync\r\nDTSTART:20261026T140000Z\r\nDTEND:20261026T150000Z\r\nRRULE:FREQ=WEEKLY;INTERVAL=2;COUNT=4\r\nORGANIZER:mailto:ana@example.org\r\nEND:VEVENT\r\n";
+        let shorter = base.replace("SEQUENCE:3", "SEQUENCE:4").replace("COUNT=4", "UNTIL=20261026T150000Z");
+        let mut st = s;
+        let add = |n: u32, ics_body: &str, date: i64| {
+            let raw = mail(&ics("REQUEST", ics_body), false);
+            let mut meta = crate::message::parse_meta(&raw);
+            meta.message_id = format!("g{n}");
+            meta.date = date;
+            let id = st.insert_message(&crate::store::NewMessage { account_id: a.id, folder: "INBOX".into(), uid: Some(n), pop_uidl: None, meta, seen: false, flagged: false, size: 1, raw: Some(raw.clone()) }).unwrap();
+            st.set_text(id, true, "").unwrap();
+            (id, raw)
+        };
+        let (_, _) = add(1, base, at("20261020T000000Z"));
+        let (newest, raw) = add(2, &shorter, at("20261109T163000Z"));
+        // As on the laptop: only the newest was ever read, so the meeting
+        // remembers sequence 4 and never had 9 Nov.
+        import(&mut st, newest, "ana@example.org", &raw, at("20261109T163000Z")).unwrap();
+        assert_eq!(titles(&st).len(), 1);
+        let store = std::sync::Mutex::new(st);
+        crate::ops::rescan_invites_at(&store, at("20261111T000000Z")).unwrap();
+        let c = || "cancelled".to_string();
+        assert_eq!(
+            titles(&store.lock().unwrap()),
+            [("20261026".into(), "".into()), ("20261109".into(), "".into()), ("20261123".into(), c()), ("20261207".into(), c())],
+            "replayed in order: 9 Nov took place, the coming dates were cancelled"
+        );
+        assert_eq!(store.lock().unwrap().invite_reply_info("proj-1").unwrap().map(|r| r.1), Some(4), "sequence back to the newest");
+    }
+
+    // Week by week: once a date with a title is on, the other chains'
+    // cancelled dates with that title that week aren't listed; and a series
+    // cancelled long ago doesn't repeat for years.
+    #[test]
+    fn cancelled_copies_dont_pile_up() {
+        let (mut s, _) = store_with_messages(12);
+        let at = |d: &str| crate::ical::parse_datetime(d).unwrap().0;
+        let now = at("20240101T000000Z");
+        let weekly = |uid: &str, title: &str, start: &str, rule: &str| {
+            format!("BEGIN:VEVENT\r\nUID:{uid}\r\nSUMMARY:{title}\r\nDTSTART:{start}\r\nDTEND:{}\r\nRRULE:{rule}\r\nORGANIZER:mailto:ana@example.org\r\nEND:VEVENT\r\n", start.replace("T15", "T16"))
+        };
+        // On: Wednesdays from 4 Nov 2026, 6 weeks.
+        import(&mut s, 1, "ana@example.org", &mail(&ics("REQUEST", &weekly("partner-on", "Partner sync", "20261104T150000Z", "FREQ=WEEKLY;COUNT=6")), false), now).unwrap();
+        // Three other chains for the same meeting, Thursdays, all cancelled,
+        // running 20 weeks.
+        for (n, uid) in [(2, "partner-a"), (3, "partner-b"), (4, "partner-c")] {
+            import(&mut s, n, "ana@example.org", &mail(&ics("CANCEL", &weekly(uid, "Partner sync", "20261105T150000Z", "FREQ=WEEKLY;COUNT=20")), false), now).unwrap();
+        }
+        // A 2024 series: weekly with no end (laid out two years), cancelled.
+        import(&mut s, 5, "ana@example.org", &mail(&ics("CANCEL", &weekly("old-24", "Old sync", "20240103T150000Z", "FREQ=WEEKLY")), false), now).unwrap();
+        let cal = s.invitations_calendar().unwrap();
+        let shown: Vec<_> = s.events_between(0, i64::MAX / 2).unwrap().into_iter().filter(|e| e.calendar_id == cal).collect();
+        let partner: Vec<_> = shown.iter().filter(|e| e.event.title == "Partner sync").collect();
+        let weeks_on = partner.iter().filter(|e| !e.event.cancelled).count();
+        let cancelled: Vec<String> = partner.iter().filter(|e| e.event.cancelled).map(|e| crate::ical::fmt_date(e.event.start)).collect();
+        assert_eq!(weeks_on, 6);
+        // The 6 weeks that are on show no cancelled copy; after them, one
+        // cancelled date a week, for 8 weeks.
+        assert_eq!(cancelled.first().map(String::as_str), Some("20261217"), "{cancelled:?}");
+        assert_eq!(cancelled.len(), 7, "within 8 weeks of the last one on (9 Dec), one a week: {cancelled:?}");
+        let old: Vec<_> = shown.iter().filter(|e| e.event.title == "Old sync").map(|e| crate::ical::fmt_date(e.event.start)).collect();
+        assert_eq!(old.len(), 9, "only its first weeks: {old:?}");
+        assert!(old.iter().all(|d| d.starts_with("2024")), "{old:?}");
+        let stored: i64 = s.conn().query_row("SELECT COUNT(*) FROM events WHERE remote_id = 'old-24'", [], |r| r.get(0)).unwrap();
+        assert!(stored > 100, "all kept, just not listed");
+    }
+
     #[test]
     fn every_calendar_file_counts() {
         let (mut s, _) = store_with_messages(12);
@@ -436,8 +515,9 @@ mod tests {
         assert_eq!(by_series(&s, "weekly-1#mallory@evil.example").len(), 4);
         // …and their cancellation doesn't touch Ana's either, even naming Ana as organizer.
         import(&mut s, 3, "mallory@evil.example", &mail(&ics("CANCEL", SERIES), false), now).unwrap();
+        // What's stored (the calendar shows one copy per date).
         fn cancelled(s: &Store, uid: &str) -> usize {
-            s.events_between(0, i64::MAX / 2).unwrap().iter().filter(|e| e.remote_id == uid && e.event.cancelled).count()
+            s.conn().query_row("SELECT COUNT(*) FROM events WHERE remote_id = ?1 AND cancelled = 1", [uid], |r| r.get::<_, i64>(0)).unwrap() as usize
         }
         assert_eq!(cancelled(&s, "weekly-1"), 0, "Ana's meeting isn't cancelled by a stranger");
         assert_eq!(cancelled(&s, "weekly-1#mallory@evil.example"), 4, "only the stranger's copy is");
