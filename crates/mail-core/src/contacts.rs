@@ -1,5 +1,5 @@
 //! Contacts: the model and the file formats people bring them in:
-//! vCard (Google, Outlook, Apple, Thunderbird; 2.1, 3.0 and 4.0), CSV with
+//! vCard (Google, Outlook, macOS/iOS, Thunderbird; 2.1, 3.0 and 4.0), CSV with
 //! Google's, Outlook's or Thunderbird's columns, and Thunderbird's LDIF.
 
 use serde::{Deserialize, Serialize};
@@ -455,7 +455,7 @@ mod tests {
     }
 
     #[test]
-    fn vcards_from_google_apple_and_outlook_2_1() {
+    fn vcards_from_google_ios_and_outlook_2_1() {
         let v = "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Ana Souza\r\nN:Souza;Ana;;;\r\nitem1.EMAIL;TYPE=INTERNET:ana@example.org\r\nEMAIL;TYPE=WORK:Ana@Work.example\r\nTEL;TYPE=CELL:+34 600 000 000\r\nORG:Acme\\, Inc.;Sales\r\nNOTE:Met at\\nthe conference\r\nUID:abc-1\r\nEND:VCARD\r\n\
 BEGIN:VCARD\r\nVERSION:2.1\r\nN;CHARSET=UTF-8;ENCODING=QUOTED-PRINTABLE:Pere=\r\nira;Jo=C3=A3o\r\nEMAIL;PREF;INTERNET:joao@example.org\r\nEND:VCARD\r\n\
 BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Bo\r\n  Long Name\r\nEMAIL:mailto:bo@example.org\r\nTEL;VALUE=uri:tel:+1-555-0100\r\nEND:VCARD\r\n";

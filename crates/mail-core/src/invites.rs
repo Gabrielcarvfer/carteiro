@@ -380,10 +380,10 @@ mod tests {
         assert_eq!((v[0].2.as_str(), v[0].3.as_str()), ("a-2", "yes"));
         assert_eq!(v.len(), 3);
         // Search shows it once too.
-        assert_eq!(s.search_events("apple", 50).unwrap().len(), 2);
+        assert_eq!(s.search_events("partner", 50).unwrap().len(), 2);
     }
 
-    // Monday's meeting: a two-weekly series, then an update sent right after
+    // A meeting that took place: a two-weekly series, then an update sent right after
     // one of its dates ends the series earlier (Outlook's "this and
     // following" change). That date took place: it stays as it was; the
     // coming ones stay too, cancelled. A date the update moves isn't left
@@ -423,7 +423,7 @@ mod tests {
 
     // A rescan replays a meeting's emails in arrival order, each as of its
     // own date: the newest update's sequence doesn't turn the older ones
-    // away, and Monday's date comes back as it took place.
+    // away, and a past date comes back as it took place.
     #[test]
     fn rescan_replays_history() {
         let s = Store::open_in_memory().unwrap();

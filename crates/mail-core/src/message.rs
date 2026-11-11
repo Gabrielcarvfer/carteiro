@@ -184,7 +184,7 @@ pub fn snippet_of(text: &str) -> String {
 }
 
 /// Splits a plain-text reply into (what the sender wrote, quoted history).
-/// Recognizes `>` quoting, "On ... wrote:" (Gmail/Apple), and Outlook's
+/// Recognizes `>` quoting, "On ... wrote:" (Gmail, macOS/iOS Mail), and Outlook's
 /// "-----Original Message-----" / "From: ... Sent:" blocks.
 pub fn split_quoted(text: &str) -> (String, String) {
     let lines: Vec<&str> = text.lines().collect();

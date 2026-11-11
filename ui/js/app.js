@@ -784,7 +784,7 @@ function folderName(name) {
 const MAIL_CSP = "default-src 'none'; img-src data: cid:; style-src 'unsafe-inline'; font-src data:";
 // HTML mail goes in a sandboxed iframe: scripts off, remote content blocked
 // by CSP (no tracking pixels). allow-same-origin only lets us measure height.
-// Quoted history as the common mail apps mark it: <blockquote> (Apple Mail and
+// Quoted history as the common mail apps mark it: <blockquote> (macOS/iOS Mail and
 // most others), Gmail, Outlook's reply header and all that follows, Yahoo, Thunderbird.
 const QUOTE_SEL = "blockquote,.gmail_quote,.yahoo_quoted,.moz-cite-prefix,#divRplyFwdMsg,#divRplyFwdMsg~*,#appendonsend~*";
 const hasQuote = (h) => /<blockquote|gmail_quote|yahoo_quoted|moz-cite-prefix|divRplyFwdMsg|appendonsend/i.test(h);
