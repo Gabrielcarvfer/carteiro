@@ -351,7 +351,7 @@ mod tests {
         let mut st = Store::open_in_memory().unwrap();
         let t = |d: &str| crate::ical::parse_datetime(d).unwrap().0;
         let ev = |start: i64| crate::ical::Event { title: "Sync".into(), start, end: start + 3600, recurring: true, ..Default::default() };
-        st.save_invite("s-1", "ana@x.org", 0, &[ev(t("20261109T100000Z")), ev(t("20261116T100000Z"))], false, "ana@x.org", None).unwrap();
+        st.save_invite("s-1", "ana@x.org", 0, &[ev(t("20261109T100000Z")), ev(t("20261116T100000Z"))], false, "ana@x.org", None, 0).unwrap();
         let cal = st.invitations_calendar().unwrap();
         let first = st.events_between(0, i64::MAX / 2).unwrap().into_iter().find(|e| e.calendar_id == cal).unwrap();
         let src = st.cal_sources().unwrap().into_iter().find(|s| s.kind == "local").unwrap();

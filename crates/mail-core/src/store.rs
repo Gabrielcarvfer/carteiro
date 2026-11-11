@@ -1514,7 +1514,7 @@ impl Store {
     /// `by_hand`: you added it yourself, so dates you removed come back and
     /// an older version is accepted.
     #[allow(clippy::too_many_arguments)]
-    pub fn save_invite(&mut self, uid: &str, sender: &str, sequence: i64, instances: &[crate::ical::Event], by_hand: bool, organizer: &str, account: Option<i64>) -> Result<bool> {
+    pub fn save_invite(&mut self, uid: &str, sender: &str, sequence: i64, instances: &[crate::ical::Event], by_hand: bool, organizer: &str, account: Option<i64>, now: i64) -> Result<bool> {
         let cal = self.invitations_calendar()?;
         let sender = sender.to_lowercase();
         let existing: Option<(String, i64, String, String)> = self
@@ -1535,7 +1535,24 @@ impl Store {
             rows
         };
         let tx = self.conn.transaction()?;
-        tx.execute("DELETE FROM events WHERE calendar_id = ?1 AND remote_id = ?2", params![cal, uid])?;
+        // Dates an update no longer has (it ends a series earlier, drops or
+        // skips dates) don't disappear: past ones stay as they were (they
+        // took place), coming ones are marked cancelled. Dates it has, or
+        // moved elsewhere, are replaced.
+        let mut replaced: Vec<i64> = instances.iter().map(|e| e.start).collect();
+        replaced.extend(instances.iter().filter_map(|e| e.recurrence_id));
+        let stored: Vec<(i64, i64, i64)> = {
+            let mut st = tx.prepare_cached("SELECT id, start, end FROM events WHERE calendar_id = ?1 AND remote_id = ?2")?;
+            let rows = st.query_map(params![cal, uid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<rusqlite::Result<_>>()?;
+            rows
+        };
+        for (id, start, end) in stored {
+            if replaced.contains(&start) {
+                tx.execute("DELETE FROM events WHERE id = ?1", [id])?;
+            } else if end > now {
+                tx.execute("UPDATE events SET cancelled = 1 WHERE id = ?1", [id])?;
+            }
+        }
         for e in instances.iter().filter(|e| !removed.iter().any(|&(a, b)| e.start >= a && e.start < b)) {
             tx.execute(
                 "INSERT INTO events (calendar_id, remote_id, uid, title, location, description, start, end, all_day, floating, recurring, tzid, rsvp, cancelled)
@@ -1962,7 +1979,36 @@ impl Store {
             Self::EVENT_COLS
         ))?;
         let rows = st.query_map(params![from, to], Self::row_to_event)?.collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
+        self.one_per_meeting(rows)
+    }
+
+    /// The database, for other modules' tests.
+    #[cfg(test)]
+    pub(crate) fn conn(&self) -> &Connection {
+        &self.conn
+    }
+
+    /// The same meeting can reach the Invitations calendar twice: two
+    /// invitations for it (some senders put two in one email), or a copy
+    /// kept apart because someone other than its first sender sent it. Same
+    /// title (ignoring case and spaces at the ends), start and end: shown
+    /// once. Kept: the one you answered, else one not cancelled, else the
+    /// first sender's, else the oldest. Nothing is deleted, so rescans can't
+    /// bring copies back.
+    fn one_per_meeting(&self, events: Vec<StoredEvent>) -> Result<Vec<StoredEvent>> {
+        let Some(cal) = self.conn.query_row("SELECT id FROM calendars WHERE remote_id = 'invitations' LIMIT 1", [], |r| r.get::<_, i64>(0)).optional()? else {
+            return Ok(events);
+        };
+        // (title, start, end) → the id kept, and its rank (lower is better).
+        type Rank = (bool, bool, bool, i64);
+        let key = |e: &StoredEvent| (e.event.title.trim().to_lowercase(), e.event.start, e.event.end);
+        let rank = |e: &StoredEvent| -> Rank { (e.rsvp.is_empty(), e.event.cancelled, e.remote_id.contains('#'), e.id) };
+        let mut best: HashMap<(String, i64, i64), (i64, Rank)> = HashMap::new();
+        for e in events.iter().filter(|e| e.calendar_id == cal) {
+            let r = rank(e);
+            best.entry(key(e)).and_modify(|b| if r < b.1 { *b = (e.id, r) }).or_insert((e.id, r));
+        }
+        Ok(events.into_iter().filter(|e| e.calendar_id != cal || best.get(&key(e)).is_some_and(|b| b.0 == e.id)).collect())
     }
 
     /// Events in visible calendars whose title, location or description
@@ -1982,7 +2028,7 @@ impl Store {
         let mut args: Vec<rusqlite::types::Value> = vec![i64::from(limit).into()];
         args.extend(words.into_iter().map(Into::into));
         let rows = st.query_map(rusqlite::params_from_iter(args.iter()), Self::row_to_event)?.collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
+        self.one_per_meeting(rows)
     }
 
     pub fn event(&self, id: i64) -> Result<Option<StoredEvent>> {

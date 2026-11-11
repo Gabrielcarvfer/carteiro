@@ -148,7 +148,7 @@ fn apply(store: &mut Store, sender: &str, ics: &str, now: i64, by_hand: bool, ac
             let first = events.iter().map(|e| e.start).min().unwrap_or(now);
             let instances = crate::recur::expand_all_with(events, first.min(now - PAST), now.max(first) + FUTURE, MAX_INSTANCES, true);
             let owner = if answer && !organizer.is_empty() { organizer.as_str() } else { sender };
-            let done = store.save_invite(&key, owner, sequence, &instances, by_hand, &organizer, account)?;
+            let done = store.save_invite(&key, owner, sequence, &instances, by_hand, &organizer, account, now)?;
             outcome = if done { if method == "CANCEL" { "cancelled" } else { "added" } } else { "older update" };
             done
         };
@@ -220,16 +220,18 @@ mod tests {
         s.set_rsvp(first.id, "maybe").unwrap();
         let update = SERIES.replace("SEQUENCE:0", "SEQUENCE:1").replace("COUNT=4", "COUNT=2");
         import(&mut s, 2, "ana@example.org", &mail(&ics("REQUEST", &update), false), now).unwrap();
-        assert_eq!(titles(&s), [("20261109".into(), "maybe".into()), ("20261116".into(), "".into())]);
+        // The dates it no longer has stay, cancelled.
+        let c = || "cancelled".to_string();
+        assert_eq!(titles(&s), [("20261109".into(), "maybe".into()), ("20261116".into(), "".into()), ("20261123".into(), c()), ("20261130".into(), c())]);
         // A stale update (older sequence) changes nothing.
         import(&mut s, 3, "ana@example.org", &mail(&ics("REQUEST", SERIES), false), now).unwrap();
-        assert_eq!(titles(&s).len(), 2);
+        assert_eq!(titles(&s).len(), 4);
         // One date cancelled, then the whole series: kept, marked cancelled.
         let one = "BEGIN:VEVENT\r\nUID:weekly-1\r\nSEQUENCE:2\r\nRECURRENCE-ID;TZID=Europe/Lisbon:20261116T100000\r\nDTSTART;TZID=Europe/Lisbon:20261116T100000\r\nSTATUS:CANCELLED\r\nEND:VEVENT\r\n";
         import(&mut s, 5, "ana@example.org", &mail(&ics("CANCEL", one), false), now).unwrap();
-        assert_eq!(titles(&s), [("20261109".into(), "maybe".into()), ("20261116".into(), "cancelled".into())]);
+        assert_eq!(titles(&s), [("20261109".into(), "maybe".into()), ("20261116".into(), c()), ("20261123".into(), c()), ("20261130".into(), c())]);
         import(&mut s, 6, "ana@example.org", &mail(&ics("CANCEL", &update), false), now).unwrap();
-        assert_eq!(titles(&s), [("20261109".into(), "cancelled".into()), ("20261116".into(), "cancelled".into())]);
+        assert!(titles(&s).iter().all(|t| t.1 == "cancelled"));
         // A new invitation brings it back (newer sequence).
         let up3 = SERIES.replace("SEQUENCE:0", "SEQUENCE:3");
         import(&mut s, 8, "ana@example.org", &mail(&ics("REQUEST", &up3), false), now).unwrap();
@@ -263,7 +265,7 @@ mod tests {
         s.add_account(&mut a).unwrap();
         // Arrives (clean) in this order: the series, an update to 2 dates,
         // another meeting, and a mail with no calendar.
-        let other = SERIES.replace("weekly-1", "other-1").replace("COUNT=4", "COUNT=1");
+        let other = SERIES.replace("weekly-1", "other-1").replace("COUNT=4", "COUNT=1").replace("Team sync", "Lunch");
         let update = SERIES.replace("SEQUENCE:0", "SEQUENCE:1").replace("COUNT=4", "COUNT=2");
         let mails: Vec<Vec<u8>> = vec![
             mail(&ics("REQUEST", SERIES), true),
@@ -288,14 +290,15 @@ mod tests {
         assert_eq!(titles(&st).len(), 4);
         let store = std::sync::Mutex::new(st);
 
-        assert_eq!(crate::ops::rescan_invites(&store).unwrap(), 3, "the three mails with a calendar file");
+        assert_eq!(crate::ops::rescan_invites_at(&store, now).unwrap(), 3, "the three mails with a calendar file");
         let after = titles(&store.lock().unwrap());
-        assert_eq!(after.iter().filter(|t| t.0.starts_with("2026")).count(), 3, "2 dates of the updated series + the other meeting: {after:?}");
+        assert_eq!(after.iter().filter(|t| t.1 != "cancelled").count(), 3, "2 dates of the updated series + the other meeting: {after:?}");
+        assert_eq!(after.iter().filter(|t| t.1 == "cancelled").count(), 2, "the dates the update dropped stay, cancelled: {after:?}");
         assert!(crate::ops::take_invites_changed());
 
         // Again, and again: nothing doubles.
-        crate::ops::rescan_invites(&store).unwrap();
-        crate::ops::rescan_invites(&store).unwrap();
+        crate::ops::rescan_invites_at(&store, now).unwrap();
+        crate::ops::rescan_invites_at(&store, now).unwrap();
         assert_eq!(titles(&store.lock().unwrap()), after, "rescanning doesn't add copies");
 
         // A date you removed stays removed; your answer stays.
@@ -310,8 +313,8 @@ mod tests {
             st.remove_series_range(other[0].id, None, None).unwrap();
         }
         let kept = titles(&store.lock().unwrap());
-        assert_eq!(kept.len(), 1, "{kept:?}");
-        crate::ops::rescan_invites(&store).unwrap();
+        assert_eq!(kept.len(), 3, "the answered date and the two cancelled ones: {kept:?}");
+        crate::ops::rescan_invites_at(&store, now).unwrap();
         assert_eq!(titles(&store.lock().unwrap()), kept, "removed dates and series don't come back; answers stay");
         assert_eq!(kept[0].1, "yes");
     }
@@ -342,6 +345,79 @@ mod tests {
         // Someone else can't move it.
         import(&mut s, 3, "mallory@evil.example", &mail(&ics("REQUEST", &moved.replace("20261117T11", "20261118T11").replace("RECURRENCE-ID;TZID=Europe/Lisbon:20261116", "RECURRENCE-ID;TZID=Europe/Lisbon:20261117")), false), now).unwrap();
         assert!(s.events_between(0, i64::MAX / 2).unwrap().iter().any(|e| e.calendar_id == cal && crate::ical::fmt_date(e.event.start) == "20261117"));
+    }
+
+    // Two invitations for one meeting (or a copy kept apart from another
+    // sender): shown once, the one you answered kept; different meetings at
+    // the same time, or with different times, stay apart.
+    #[test]
+    fn the_same_meeting_shows_once() {
+        let (mut s, _) = store_with_messages(8);
+        let now = crate::ical::parse_datetime("20261101T000000Z").unwrap().0;
+        let one = |uid: &str, title: &str, start: &str, end: &str| {
+            format!("BEGIN:VEVENT\r\nUID:{uid}\r\nSUMMARY:{title}\r\nDTSTART:{start}\r\nDTEND:{end}\r\nORGANIZER:mailto:ana@example.org\r\nEND:VEVENT\r\n")
+        };
+        // Two invitations in one email for the same meeting (different uids).
+        let both = format!("{}{}", one("a-1", "Partner sync", "20261119T150000Z", "20261119T160000Z"), one("a-2", " partner sync", "20261119T150000Z", "20261119T160000Z"));
+        import(&mut s, 1, "ana@example.org", &mail(&ics("REQUEST", &both), false), now).unwrap();
+        // The same again from someone else: kept apart, and identical.
+        import(&mut s, 2, "bo@example.org", &mail(&ics("REQUEST", &one("a-1", "Partner sync", "20261119T150000Z", "20261119T160000Z")), false), now).unwrap();
+        // A different meeting at the same time, and the same title later.
+        import(&mut s, 3, "ana@example.org", &mail(&ics("REQUEST", &one("b-1", "Budget", "20261119T150000Z", "20261119T160000Z")), false), now).unwrap();
+        import(&mut s, 4, "ana@example.org", &mail(&ics("REQUEST", &one("a-3", "Partner sync", "20261126T150000Z", "20261126T160000Z")), false), now).unwrap();
+        let cal = s.invitations_calendar().unwrap();
+        let stored: i64 = s.conn().query_row("SELECT COUNT(*) FROM events WHERE calendar_id = ?1", [cal], |r| r.get(0)).unwrap();
+        assert_eq!(stored, 5, "nothing deleted");
+        let shown = |s: &Store| s.events_between(0, i64::MAX / 2).unwrap().into_iter().filter(|e| e.calendar_id == cal).map(|e| (e.event.title.trim().to_lowercase(), crate::ical::fmt_date(e.event.start), e.remote_id, e.rsvp)).collect::<Vec<_>>();
+        let v = shown(&s);
+        assert_eq!(v.iter().map(|e| (e.0.as_str(), e.1.as_str())).collect::<Vec<_>>(), [("partner sync", "20261119"), ("budget", "20261119"), ("partner sync", "20261126")], "{v:?}");
+        assert_eq!(v[0].2, "a-1", "the first sender's, oldest");
+        // The copy you answered is the one shown.
+        let hidden: i64 = s.conn().query_row("SELECT id FROM events WHERE remote_id = 'a-2'", [], |r| r.get(0)).unwrap();
+        s.set_rsvp(hidden, "yes").unwrap();
+        let v = shown(&s);
+        assert_eq!((v[0].2.as_str(), v[0].3.as_str()), ("a-2", "yes"));
+        assert_eq!(v.len(), 3);
+        // Search shows it once too.
+        assert_eq!(s.search_events("apple", 50).unwrap().len(), 2);
+    }
+
+    // Monday's meeting: a two-weekly series, then an update sent right after
+    // one of its dates ends the series earlier (Outlook's "this and
+    // following" change). That date took place: it stays as it was; the
+    // coming ones stay too, cancelled. A date the update moves isn't left
+    // behind as a cancelled copy.
+    #[test]
+    fn an_update_never_erases_dates() {
+        let (mut s, _) = store_with_messages(4);
+        let at = |d: &str| crate::ical::parse_datetime(d).unwrap().0;
+        let base = "BEGIN:VEVENT\r\nUID:proj-1\r\nSEQUENCE:3\r\nSUMMARY:Project sync\r\nDTSTART:20261026T140000Z\r\nDTEND:20261026T150000Z\r\nRRULE:FREQ=WEEKLY;INTERVAL=2;COUNT=4\r\nORGANIZER:mailto:ana@example.org\r\nEND:VEVENT\r\n";
+        import(&mut s, 1, "ana@example.org", &mail(&ics("REQUEST", base), false), at("20261020T000000Z")).unwrap();
+        assert_eq!(titles(&s).iter().map(|t| t.0.as_str()).collect::<Vec<_>>(), ["20261026", "20261109", "20261123", "20261207"]);
+        // Sent on 9 Nov after that day's meeting: the series now ends on 26
+        // Oct, so only that date remains in it.
+        let shorter = base.replace("SEQUENCE:3", "SEQUENCE:4").replace("COUNT=4", "UNTIL=20261026T150000Z");
+        let monday_evening = at("20261109T163000Z");
+        import(&mut s, 2, "ana@example.org", &mail(&ics("REQUEST", &shorter), false), monday_evening).unwrap();
+        let c = || "cancelled".to_string();
+        assert_eq!(
+            titles(&s),
+            [("20261026".into(), "".into()), ("20261109".into(), "".into()), ("20261123".into(), c()), ("20261207".into(), c())],
+            "9 Nov took place: kept as it was; the coming dates kept, cancelled"
+        );
+        // Reading the same email again changes nothing.
+        s.forget_invites(2).unwrap();
+        import(&mut s, 2, "ana@example.org", &mail(&ics("REQUEST", &shorter), false), monday_evening).unwrap();
+        assert_eq!(titles(&s).len(), 4);
+        // A full update that moves 23 Nov to the 24th: only the 24th shows.
+        let moved = format!(
+            "{}BEGIN:VEVENT\r\nUID:proj-1\r\nSEQUENCE:5\r\nSUMMARY:Project sync\r\nRECURRENCE-ID:20261123T140000Z\r\nDTSTART:20261124T140000Z\r\nDTEND:20261124T150000Z\r\nORGANIZER:mailto:ana@example.org\r\nEND:VEVENT\r\n",
+            base.replace("SEQUENCE:3", "SEQUENCE:5")
+        );
+        import(&mut s, 3, "ana@example.org", &mail(&ics("REQUEST", &moved), false), monday_evening).unwrap();
+        let v = titles(&s);
+        assert!(v.iter().any(|t| t.0 == "20261124" && t.1.is_empty()), "{v:?}");
+        assert!(!v.iter().any(|t| t.0 == "20261123"), "the moved date isn't left behind: {v:?}");
     }
 
     #[test]
