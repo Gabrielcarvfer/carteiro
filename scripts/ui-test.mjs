@@ -333,6 +333,23 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 860, false], ["phone", 39
     await swipe(wd * 0.6);
     expect(await on() === "about", `swipe back from the first: ${await on()}`);
   });
+  await test("commands sent before the app is ready wait for it", async () => {
+    const r = await js(`(async () => {
+      const { invokeWhenReady } = await import("./js/api.js");
+      const noWait = async () => {};
+      let calls = 0;
+      const early = async () => { if (++calls < 4) throw "state not managed for field \`state\` on command \`list_accounts\`"; return ["ok"]; };
+      const value = await invokeWhenReady("list_accounts", {}, early, noWait);
+      let other = null;
+      try { await invokeWhenReady("x", {}, async () => { throw "wrong password"; }, noWait); } catch (e) { other = String(e); }
+      let tries = 0, gaveUp = null;
+      try { await invokeWhenReady("x", {}, async () => { tries++; throw "state not managed"; }, noWait); } catch (e) { gaveUp = String(e); }
+      return { value, calls, other, tries, gaveUp };
+    })()`);
+    expect(JSON.stringify(r.value) === '["ok"]' && r.calls === 4, `retried until ready: ${JSON.stringify(r)}`);
+    expect(r.other === "wrong password", "other errors aren't retried");
+    expect(/state not managed/.test(r.gaveUp) && r.tries > 10 && r.tries < 200, `gives up after half a minute: ${r.tries} tries`);
+  });
   await test("settings: closing the window is a choice, tray by default", async () => {
     if (mobile) return; // phones have no tray: the choice isn't shown
     await click("[data-click=pivot][data-k=general]"); await sleep(800);

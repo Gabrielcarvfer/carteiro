@@ -465,17 +465,21 @@ impl Store {
         if conn.prepare("SELECT rsvp FROM events LIMIT 0").is_err() {
             conn.execute_batch("ALTER TABLE events ADD COLUMN rsvp TEXT NOT NULL DEFAULT ''")?;
         }
-        // Ids folded across lines by their sender were stored with the line
-        // break; such a conversation couldn't be opened (see clean_id).
-        const WS: &str = "replace(replace(replace(replace(X, char(13), ''), char(10), ''), char(9), ''), ' ', '')";
-        for (table, col) in [("messages", "message_id"), ("messages", "thread_key"), ("msg_refs", "ref_id")] {
-            conn.execute(
-                &format!("UPDATE {table} SET {col} = {} WHERE {col} GLOB '*[' || char(9, 10, 13, 32) || ']*'", WS.replace('X', col)),
-                [],
-            )?;
-        }
         let store = Self { conn };
-        store.drop_collected_robots()?;
+        // One-time clean-ups (each scans the database, so not on every start).
+        if store.get_secret("cleanup_version")?.as_deref() != Some("1") {
+            // Ids folded across lines by their sender were stored with the line
+            // break; such a conversation couldn't be opened (see clean_id).
+            const WS: &str = "replace(replace(replace(replace(X, char(13), ''), char(10), ''), char(9), ''), ' ', '')";
+            for (table, col) in [("messages", "message_id"), ("messages", "thread_key"), ("msg_refs", "ref_id")] {
+                store.conn.execute(
+                    &format!("UPDATE {table} SET {col} = {} WHERE {col} GLOB '*[' || char(9, 10, 13, 32) || ']*'", WS.replace('X', col)),
+                    [],
+                )?;
+            }
+            store.drop_collected_robots()?;
+            store.set_secret("cleanup_version", "1")?;
+        }
         if new_att_types {
             // Messages already here: read their attachment types once.
             let ids: Vec<i64> = store
@@ -2184,6 +2188,8 @@ mod tests {
             // As the old version stored it.
             s.conn.execute("UPDATE messages SET message_id = 'a.H?=\r\n =?Q?b@v', thread_key = 'a.H?=\r\n =?Q?b@v' WHERE id = ?1", [id]).unwrap();
             s.conn.execute("INSERT INTO msg_refs (msg, ref_id) VALUES (?1, 'r\r\n\t@v')", [id]).unwrap();
+            // A database from before the clean-up existed.
+            s.conn.execute("DELETE FROM secrets WHERE key = 'cleanup_version'", []).unwrap();
             (id, acct.id)
         };
         let s = Store::open(&path).unwrap();

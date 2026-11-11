@@ -4,9 +4,25 @@
 const tauri = window.__TAURI__?.core;
 
 async function call(cmd, args = {}) {
-  if (tauri) return tauri.invoke(cmd, args);
+  if (tauri) return invokeWhenReady(cmd, args);
   const { mock } = await import("./mock.js");
   return mock(cmd, args);
+}
+
+// The window can load before the app has finished opening its database;
+// commands sent in that moment fail with "state not managed". Wait for the
+// app (up to half a minute) instead of showing that error.
+export async function invokeWhenReady(cmd, args, invoke = (c, a) => tauri.invoke(c, a), wait = (ms) => new Promise((r) => setTimeout(r, ms))) {
+  for (let waited = 0; ; ) {
+    try {
+      return await invoke(cmd, args);
+    } catch (e) {
+      if (!/state not managed/i.test(String(e)) || waited >= 30000) throw e;
+      const ms = Math.min(100 + waited / 4, 1000);
+      await wait(ms);
+      waited += ms;
+    }
+  }
 }
 
 // Query parameters that only identify the recipient or the campaign.
