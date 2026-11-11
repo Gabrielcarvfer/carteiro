@@ -23,7 +23,7 @@ const msg = (id, key, [name, email], subject, text, ago, seen = true, html = nul
   id, account_id: 1, folder: "INBOX", uid: id, message_id: `${id}@x`, thread_key: key, subject,
   from: { name, email }, to: [{ name: "Demo User", email: "demo@example.com" }], cc: [],
   date: now - ago, seen, flagged: false, has_attachments: false, snippet: text.slice(0, 120),
-  body_text: text, quoted_text: "", body_html: html, attachments: [], attachments_blocked: false, warnings: [], verdict: { status: "clean" },
+  body_text: text, quoted_text: "", body_html: html, remote_images: [], quote_missing: 0, attachments: [], attachments_blocked: false, warnings: [], verdict: { status: "clean" },
 });
 const threads = {
   t1: [
@@ -42,7 +42,9 @@ const threads = {
     "<h3 style='color:#c50f1f'>Build #4411 failed</h3><p>See the <a href='https://example.com'>logs</a>.</p>")],
   t4: [{ ...msg(7, "t4", ["Marta Ribeiro", "marta@studio.example"], "Brand refresh: first drafts", "Hi! Attached are the first logo drafts. I like option B the most, curious what you think.\n\nMarta", 5400, false),
     has_attachments: true, attachments: [{ name: "logo-drafts.pdf", mime: "application/pdf", size: 2412000, danger: null }] }],
-  t5: [msg(8, "t5", ["Lisbon Air", "bookings@lisbonair.example"], "Your trip to Porto is confirmed", "Booking ref K7Q2LP. Departure Friday 08:40 from gate B12.", 14400),
+  t5: [msg(8, "t5", ["Lisbon Air", "bookings@lisbonair.example"], "Your trip to Porto is confirmed", "Booking ref K7Q2LP. Departure Friday 08:40 from gate B12.", 14400, true,
+    // As airlines send it: a white page of tables.
+    "<table width='100%' bgcolor='#ffffff' style='background:#ffffff'><tr><td style='padding:16px;color:#333'><h2 style='color:#0b5394'>Your trip to Porto</h2><p>Booking ref <b>K7Q2LP</b>. Departure Friday 08:40 from gate B12.</p><p>Bring your passport to the gate.</p></td></tr></table>"),
     msg(9, "t5", ["Lisbon Air", "bookings@lisbonair.example"], "Check-in is now open", "Check in now and pick your seat.", 10800)],
   t6: [msg(10, "t6", ["Mum", "mum@family.example"], "Sunday lunch?", "Are you coming on Sunday? Your aunt is bringing the cake.", 26000),
     msg(11, "t6", ["Demo User", "demo@example.com"], "RE: Sunday lunch?", "Yes! I'll bring wine.", 24000)],

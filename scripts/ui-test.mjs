@@ -302,6 +302,42 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 860, false], ["phone", 39
     expect(await js(`document.querySelector("#contacts").hidden`), "Back from a mail conversation left mail");
   });
 
+  await test("find in a conversation: Ctrl+F or the button, opens matching messages, steps", async () => {
+    await page(w, h, mobile);
+    await js(`[...document.querySelectorAll("#threads .item")].find((x) => x.textContent.includes("Q3 planning")).click()`); await sleep(1200);
+    const collapsedBefore = await js(`document.querySelectorAll("#reader article.card.collapsed").length`);
+    if (mobile) await click("#reader [data-click=find-open]");
+    else await js(`document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "f", ctrlKey: true, bubbles: true }))`);
+    await sleep(300);
+    expect(await js(`!document.querySelector("#reader .findbar").hidden && document.activeElement?.matches("#reader .findbar input")`), "find bar not open and focused");
+    await js(`(() => { const i = document.querySelector("#reader .findbar input"); i.value = "thursday"; i.dispatchEvent(new Event("input", { bubbles: true })); })()`); await sleep(900);
+    const r = await js(`({ count: document.querySelector("#reader .find-count")?.textContent, hits: document.querySelectorAll("#reader mark.find-hit").length, current: document.querySelectorAll("#reader mark.find-hit.current").length })`);
+    expect(collapsedBefore > 0, "test needs a collapsed message");
+    expect(r.hits === 2 && r.current === 1 && r.count === "1 of 2", `two Thursdays, in collapsed messages: ${JSON.stringify(r)}`);
+    await js(`document.querySelector("#reader .findbar input").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }))`); await sleep(200);
+    expect(await js(`document.querySelector("#reader .find-count").textContent`) === "2 of 2", "Enter goes to the next");
+    await js(`document.querySelector("#reader .findbar input").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true }))`); await sleep(200);
+    expect(await js(`document.querySelector("#reader .find-count").textContent`) === "1 of 2", "Shift+Enter goes back");
+    await js(`(() => { const i = document.querySelector("#reader .findbar input"); i.value = "zebra"; i.dispatchEvent(new Event("input", { bubbles: true })); })()`); await sleep(500);
+    expect(await js(`document.querySelector("#reader .find-count").textContent`) === "No matches", "no matches said");
+    await js(`document.querySelector("#reader .findbar input").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))`); await sleep(200);
+    expect(await js(`document.querySelector("#reader .findbar").hidden && !document.querySelector("#reader mark.find-hit")`), "Esc closes and clears");
+  });
+  await test("find reaches inside HTML mail; dark mode darkens its frame", async () => {
+    await page(w, h, mobile);
+    await js(`localStorage.setItem("carteiro.theme", "dark")`);
+    await page(w, h, mobile);
+    await js(`[...document.querySelectorAll("#threads .item")].find((x) => x.textContent.includes("Porto")).click()`); await sleep(1200);
+    for (let i = 0; i < 3 && await js(`!!document.querySelector("#reader article.card.collapsed")`); i++) { await js(`document.querySelector("#reader article.card.collapsed .msg-head").click()`); await sleep(800); }
+    expect(await js(`document.querySelector("#reader iframe.mailbody")?.classList.contains("dark")`), "the mail frame isn't darkened");
+    expect(await js(`getComputedStyle(document.querySelector("#reader iframe.mailbody")).filter.includes("invert")`), "no invert on the frame");
+    await click("#reader [data-click=find-open]"); await sleep(200);
+    await js(`(() => { const i = document.querySelector("#reader .findbar input"); i.value = "passport"; i.dispatchEvent(new Event("input", { bubbles: true })); })()`); await sleep(900);
+    const inFrame = await js(`[...document.querySelectorAll("#reader iframe.mailbody")].reduce((n, f) => n + f.contentDocument.querySelectorAll("mark.find-hit").length, 0)`);
+    expect(inFrame === 1, `match inside the mail's frame: ${inFrame}`);
+    expect(await js(`document.querySelector("#reader .find-count").textContent`) === "1 of 1", "counted");
+    await js(`localStorage.removeItem("carteiro.theme")`);
+  });
   await test("calendar: opening it doesn't reread every invitation; the sync button does", async () => {
     await page(w, h, mobile);
     await js(`window.__calendarSyncs = []`);

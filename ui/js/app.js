@@ -119,6 +119,157 @@ function layoutState() {
   for (const b of document.querySelectorAll("[data-click=sync]")) b.classList.toggle("spin", S.syncing);
 }
 
+// ---- find in the conversation (Ctrl+F) ---------------------------------------
+// The window has no find of its own: this searches the open conversation,
+// plain text and HTML mail alike (inside their frames), opening collapsed
+// messages that match. Folded quotes aren't searched (nothing to show).
+
+const F = { open: false, query: "", hits: [], at: 0, expandedFor: null };
+
+function openFind() {
+  if (!S.messages.length) return;
+  F.open = true;
+  const bar = $("#reader .findbar");
+  if (!bar) return;
+  bar.hidden = false;
+  $("#reader [data-click=find-open]")?.classList.add("on");
+  const input = bar.querySelector("input");
+  input.focus();
+  input.select();
+  if (F.query) runFind();
+}
+function closeFind() {
+  F.open = false;
+  F.query = "";
+  clearFind();
+  const bar = $("#reader .findbar");
+  if (bar) bar.hidden = true;
+  $("#reader [data-click=find-open]")?.classList.remove("on");
+}
+
+// Every document the conversation is drawn in: the page, and each mail frame.
+function findRoots() {
+  const roots = [...document.querySelectorAll("#reader .subject, #reader article.card")].map((el) => ({ el, doc: document }));
+  for (const f of document.querySelectorAll("#reader iframe.mailbody")) {
+    try { if (f.contentDocument?.body) roots.push({ el: f.contentDocument.body, doc: f.contentDocument, frame: f }); } catch {}
+  }
+  return roots;
+}
+
+function clearFind() {
+  for (const { el } of findRoots()) {
+    for (const m of el.querySelectorAll("mark.find-hit")) {
+      const parent = m.parentNode;
+      parent.replaceChild(m.ownerDocument.createTextNode(m.textContent), m);
+      parent.normalize();
+    }
+  }
+  F.hits = [];
+  F.at = 0;
+}
+
+const FIND_STYLE = "mark.find-hit{background:#ffe066;color:#000;border-radius:2px}mark.find-hit.current{background:#ff9632}";
+
+function runFind() {
+  clearFind();
+  const q = F.query.trim().toLowerCase();
+  const count = $("#reader .find-count");
+  if (!q) { if (count) count.textContent = ""; return; }
+  // Collapsed messages that contain it open first (once per search).
+  if (F.expandedFor !== q) {
+    F.expandedFor = q;
+    const text = (m) => `${m.from.name} ${m.from.email} ${m.body_text ?? ""} ${(m.body_html ?? "").replace(/<[^>]*>/g, " ")}`.toLowerCase();
+    const closed = S.messages.filter((m) => !S.expanded[m.id] && text(m).includes(q));
+    if (closed.length) {
+      for (const m of closed) S.expanded[m.id] = true;
+      renderReader();
+      return; // the frames run it again when they've loaded
+    }
+  }
+  for (const { el, doc, frame } of findRoots()) {
+    if (frame && !doc.getElementById("find-style")) {
+      const st = doc.createElement("style");
+      st.id = "find-style";
+      st.textContent = FIND_STYLE;
+      doc.head?.appendChild(st);
+    }
+    const walker = doc.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
+      acceptNode: (n) => {
+        const p = n.parentElement;
+        if (!p || p.closest("script,style,.findbar,button,select,textarea,input")) return NodeFilter.FILTER_REJECT;
+        // Hidden (folded quotes, collapsed parts): nothing to show.
+        return p.getClientRects().length ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+      },
+    });
+    const nodes = [];
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) if (n.data.toLowerCase().includes(q)) nodes.push(n);
+    for (let node of nodes) {
+      for (let i = node.data.toLowerCase().indexOf(q); i >= 0; i = node.data.toLowerCase().indexOf(q)) {
+        const hit = node.splitText(i);
+        node = hit.splitText(q.length);
+        const mark = doc.createElement("mark");
+        mark.className = "find-hit";
+        hit.parentNode.replaceChild(mark, hit);
+        mark.appendChild(hit);
+        F.hits.push({ mark, frame });
+      }
+    }
+  }
+  // In reading order, frames by where they sit on the page.
+  const top = (h) => h.mark.getBoundingClientRect().top + (h.frame ? h.frame.getBoundingClientRect().top : 0);
+  F.hits.sort((a, b) => top(a) - top(b));
+  F.at = 0;
+  showHit();
+}
+
+function showHit() {
+  const count = $("#reader .find-count");
+  for (const h of F.hits) h.mark.classList.remove("current");
+  if (!F.hits.length) { if (count) count.textContent = F.query.trim() ? "No matches" : ""; return; }
+  const h = F.hits[F.at];
+  h.mark.classList.add("current");
+  if (count) count.textContent = `${F.at + 1} of ${F.hits.length}`;
+  // A frame has no scrolling of its own (it's as tall as the mail): scroll
+  // the conversation to the frame's spot for the mark.
+  if (h.frame) {
+    const box = h.frame.closest(".pane")?.parentElement ?? $("#reader");
+    const y = h.frame.getBoundingClientRect().top + h.mark.getBoundingClientRect().top - box.getBoundingClientRect().top + box.scrollTop;
+    box.scrollTo({ top: Math.max(0, y - box.clientHeight / 3) });
+  } else {
+    h.mark.scrollIntoView({ block: "center" });
+  }
+}
+
+function stepFind(dir) {
+  if (!F.hits.length) return;
+  F.at = (F.at + dir + F.hits.length) % F.hits.length;
+  showHit();
+}
+
+let findTimer;
+function scheduleFind() {
+  clearTimeout(findTimer);
+  findTimer = setTimeout(runFind, 120);
+}
+
+// Ctrl/Cmd+F (also inside a mail's frame), Enter / Shift+Enter, Esc.
+function findKeys(e) {
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "f" && S.messages.length && !$("#modal").childElementCount && !$("#compose").childElementCount) {
+    e.preventDefault();
+    openFind();
+  }
+}
+document.addEventListener("keydown", findKeys);
+document.addEventListener("keydown", (e) => {
+  if (!e.target.matches?.("#reader .findbar input")) return;
+  if (e.key === "Enter") { e.preventDefault(); if (F.hits.length) stepFind(e.shiftKey ? -1 : 1); else runFind(); }
+  else if (e.key === "Escape") { e.preventDefault(); closeFind(); }
+});
+on("input", "find", (el) => { F.query = el.value; F.expandedFor = null; scheduleFind(); });
+on("click", "find-open", () => (F.open ? closeFind() : openFind()));
+on("click", "find-close", () => closeFind());
+on("click", "find-step", (el) => stepFind(+el.dataset.dir));
+
 // ---- theme -------------------------------------------------------------------
 
 const THEME_KEY = "carteiro.theme";
@@ -330,6 +481,7 @@ async function openFolder(name) {
 async function openThread(ref, focusId = null) {
   const [acct, key] = splitRef(ref);
   S.returnTo = null;
+  Object.assign(F, { open: false, query: "", hits: [], at: 0, expandedFor: null });
   S.selected = ref;
   S.viewAcct = acct;
   S.loading = true;
@@ -815,9 +967,11 @@ function missingQuote(text, missing) {
   return out.join("\n").trim();
 }
 
-// Dark theme: invert the mail's colours keeping hues (white -> the card's dark
-// grey), and invert images back so photos and logos look as sent.
-const DARK_MAIL = "html{filter:invert(1) hue-rotate(180deg)}body{background:#d6d6d6}img,video,picture,svg,[style*=background-image],[background]{filter:invert(1) hue-rotate(180deg)}";
+// Dark theme: the frame itself is inverted keeping hues (white -> the card's
+// dark grey; see iframe.mailbody.dark), so it's dark even before the mail has
+// loaded, and in every WebKit (some skip a filter on a framed page's root).
+// Inside, images are inverted back so photos and logos look as sent.
+const DARK_MAIL = "body{background:#d6d6d6}img,video,picture,svg,[style*=background-image],[background]{filter:invert(1) hue-rotate(180deg)}";
 
 // "Load images": only https images from hosts that aren't trackers; tracker
 // images and 1x1 pixels (open tracking from any host) are removed first.
@@ -841,7 +995,7 @@ function mailFrame(m) {
     + (dark ? DARK_MAIL : "") + (S.showQuoted[m.id] ? "" : hideQuotes(m.quote_missing));
   const shown = S.images[m.id] ? withImages(m) : { html: m.body_html, imgSrc: "" };
   const csp = shown.imgSrc ? MAIL_CSP.replace("img-src data: cid:", `img-src data: cid: ${shown.imgSrc}`) : MAIL_CSP;
-  return html`<iframe class="mailbody" title="Message body"
+  return html`<iframe class="mailbody ${dark ? "dark" : ""}" title="Message body"
   sandbox="allow-same-origin"
   srcdoc="${`<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${csp}"><meta name="color-scheme" content="light only"><base target="_blank"><style>${css}</style></head><body>${shown.html}</body></html>`}"></iframe>`;
 }
@@ -968,6 +1122,7 @@ function renderReader() {
       <header class="toolbar">
         <button class="icon-btn show-narrow" aria-label="Back" data-click="back">${icon("back", 22)}</button>
         <div class="spacer"></div>
+        <button class="icon-btn ${F.open ? "on" : ""}" title="Find in this conversation (Ctrl+F)" data-click="find-open">${icon("search")}</button>
         <button class="icon-btn" title="Delete" data-click="conv" data-kind="delete">${icon("trash")}</button>
         <button class="icon-btn" title="Archive" data-click="conv" data-kind="archive">${icon("archive")}</button>
         ${ms.some((m) => !m.seen)
@@ -981,6 +1136,13 @@ function renderReader() {
           ${(S.viewFolders ?? S.folders).filter((f) => f.name !== last.folder).map((f) => html`<option value="${f.name}">${folderLabel(f)}</option>`)}
         </select>
       </header>
+      <div class="findbar" ${F.open ? "" : "hidden"}>
+        <input type="search" placeholder="Find in this conversation" aria-label="Find in this conversation" data-input="find" data-key="find" value="${F.query}" />
+        <span class="find-count muted small" aria-live="polite"></span>
+        <button class="icon-btn" title="Previous (Shift+Enter)" data-click="find-step" data-dir="-1">${icon("up")}</button>
+        <button class="icon-btn" title="Next (Enter)" data-click="find-step" data-dir="1">${icon("down")}</button>
+        <button class="icon-btn" title="Close (Esc)" data-click="find-close">${icon("close")}</button>
+      </div>
       <h1 class="subject">${subject || "(no subject)"}</h1>
       <!-- Newest first, so replying to it sits at the top. -->
       <div class="quick-reply">
@@ -1004,11 +1166,16 @@ function renderReader() {
       try {
         f.contentDocument.addEventListener("click", onLink);
         f.contentDocument.addEventListener("auxclick", onLink);
+        f.contentDocument.addEventListener("keydown", findKeys);
       } catch {}
+      if (F.open && F.query) scheduleFind();
       try { f.style.height = Math.min(f.contentDocument.documentElement.scrollHeight + 16, 20000) + "px"; }
       catch { f.style.height = "600px"; }
     });
   }
+  // Redrawn while finding: mark the plain-text messages again (frames do
+  // it themselves once loaded).
+  if (F.open && F.query) scheduleFind();
 }
 
 // ---- reply / forward ---------------------------------------------------------
