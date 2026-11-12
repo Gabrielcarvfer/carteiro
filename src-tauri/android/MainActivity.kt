@@ -156,6 +156,40 @@ class MainActivity : TauriActivity() {
       return out.toString()
     }
 
+    // An attachment saved earlier, opened with the phone's app for its type.
+    // Only Carteiro's Download/Carteiro folder, and not types that run code.
+    @JavascriptInterface
+    fun openFile(path: String): Boolean {
+      val file = java.io.File(path).canonicalFile
+      val dir = java.io.File("/storage/emulated/0/Download/Carteiro").canonicalFile
+      if (!file.path.startsWith(dir.path + "/") || !file.isFile) return false
+      val ext = file.extension.lowercase()
+      if (ext in setOf("apk", "apks", "xapk", "exe", "msi", "bat", "cmd", "sh", "js", "jar", "dex", "so")) return false
+      val type = android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: "application/octet-stream"
+      // The media index's address for it (the file was indexed when saved).
+      val files = android.provider.MediaStore.Files.getContentUri("external")
+      val uri = contentResolver.query(files, arrayOf(android.provider.MediaStore.MediaColumns._ID),
+        "${android.provider.MediaStore.MediaColumns.DATA} = ?", arrayOf(file.path), null)?.use { c ->
+        if (c.moveToFirst()) android.content.ContentUris.withAppendedId(files, c.getLong(0)) else null
+      }
+      if (uri == null) {
+        // Not indexed yet: index it, then open.
+        MediaScannerConnection.scanFile(this@MainActivity, arrayOf(file.path), arrayOf(type)) { _, scanned ->
+          if (scanned != null) runOnUiThread { view(scanned, type) }
+        }
+        return true
+      }
+      return view(uri, type)
+    }
+
+    private fun view(uri: Uri, type: String): Boolean = try {
+      startActivity(Intent.createChooser(
+        Intent(Intent.ACTION_VIEW).setDataAndType(uri, type).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION), null))
+      true
+    } catch (e: ActivityNotFoundException) {
+      false
+    }
+
     @JavascriptInterface
     fun open(url: String): Boolean {
       val lower = url.lowercase()

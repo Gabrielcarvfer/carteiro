@@ -731,7 +731,10 @@ async fn index_with_activity(app: &AppHandle, s: &AppState) {
             activity(app, "index", Some("Checking new mail with ClamAV and indexing it for search".into()));
         }
     };
-    let _ = ops::index_clean_text_with(&s.store, &scanner(s), &progress).await;
+    // On battery only mail since everything was last checked: the backlog
+    // (older mail downloaded for offline use) waits for the charger.
+    let since = if s.clam.is_charging() { None } else { ops::battery_index_since(&s.store).ok() };
+    let _ = ops::index_clean_text_since(&s.store, &scanner(s), &progress, since).await;
     activity(app, "index", None);
 }
 
@@ -914,6 +917,30 @@ fn is_openable(url: &str) -> bool {
             c.is_control() || c.is_whitespace() || matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}')
         })
         && (lower.starts_with("https://") || lower.starts_with("http://") || lower.starts_with("mailto:"))
+}
+
+/// An attachment saved earlier, opened with the system's app for it. Only
+/// files in Carteiro's own save folder, and never types that run code.
+#[tauri::command]
+async fn open_saved(app: AppHandle, path: String) -> Res<()> {
+    let dir = export_dir(&app)?.canonicalize().map_err(err)?;
+    let file = std::path::Path::new(&path).canonicalize().map_err(|_| "That file isn't there any more".to_string())?;
+    if !file.starts_with(&dir) || !file.is_file() {
+        return Err("Only attachments Carteiro saved can be opened".into());
+    }
+    let name = file.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    if let Some(why) = mail_core::safety::attachment_risk(&name) {
+        return Err(format!("Not opened: {why}"));
+    }
+    #[cfg(windows)]
+    let r = std::process::Command::new("explorer").arg(&file).spawn();
+    #[cfg(target_os = "macos")]
+    let r = std::process::Command::new("open").arg(&file).spawn();
+    #[cfg(target_os = "linux")]
+    let r = std::process::Command::new("xdg-open").arg(&file).spawn();
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+    let r: std::io::Result<()> = Err(std::io::Error::other("opening files isn't supported here"));
+    r.map(|_| ()).map_err(|e| format!("Couldn't open it: {e}"))
 }
 
 /// A link clicked in a message: opened in the system browser.
@@ -1916,6 +1943,7 @@ pub fn run() {
             set_charging,
             event_sources,
             contact_threads,
+            open_saved,
             invite_diagnostics,
             send_rsvp,
             set_utc_offset,

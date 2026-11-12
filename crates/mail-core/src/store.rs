@@ -1211,9 +1211,14 @@ impl Store {
     /// Downloaded messages whose text hasn't been scanned for indexing yet.
     /// How many downloaded messages wait to be scanned and indexed.
     pub fn count_unindexed(&self) -> Result<usize> {
+        self.count_unindexed_since(None)
+    }
+
+    /// Messages not checked yet, dated `since` or later (None: all).
+    pub fn count_unindexed_since(&self, since: Option<i64>) -> Result<usize> {
         Ok(self.conn.query_row(
-            "SELECT COUNT(*) FROM messages m LEFT JOIN msg_text t ON t.msg = m.id WHERE m.raw IS NOT NULL AND t.msg IS NULL",
-            [],
+            "SELECT COUNT(*) FROM messages m LEFT JOIN msg_text t ON t.msg = m.id WHERE m.raw IS NOT NULL AND t.msg IS NULL AND m.date >= ?1",
+            [since.unwrap_or(i64::MIN)],
             |r| r.get::<_, i64>(0),
         )? as usize)
     }
@@ -1221,13 +1226,18 @@ impl Store {
     /// Messages to scan and index, each whole: its stored attachments are
     /// put back in (the `raw` column alone lacks them).
     pub fn unindexed(&self, limit: u32) -> Result<Vec<(i64, Vec<u8>)>> {
+        self.unindexed_since(limit, None)
+    }
+
+    /// `unindexed`, only messages dated `since` or later (None: all).
+    pub fn unindexed_since(&self, limit: u32, since: Option<i64>) -> Result<Vec<(i64, Vec<u8>)>> {
         let ids: Vec<i64> = self
             .conn
             .prepare_cached(
                 "SELECT m.id FROM messages m LEFT JOIN msg_text t ON t.msg = m.id
-                 WHERE m.raw IS NOT NULL AND t.msg IS NULL ORDER BY m.date DESC LIMIT ?1",
+                 WHERE m.raw IS NOT NULL AND t.msg IS NULL AND m.date >= ?2 ORDER BY m.date DESC LIMIT ?1",
             )?
-            .query_map([limit], |r| r.get(0))?
+            .query_map(params![limit, since.unwrap_or(i64::MIN)], |r| r.get(0))?
             .collect::<rusqlite::Result<_>>()?;
         let mut out = Vec::with_capacity(ids.len());
         for id in ids {

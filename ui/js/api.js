@@ -109,6 +109,9 @@ export const api = {
   installUpdate: () => call("install_update"),
   // Tracking parameters are dropped first. Android opens links through the
   // activity (src-tauri/android/MainActivity.kt).
+  openSaved: (path) => window.CarteiroAndroid?.openFile
+    ? (window.CarteiroAndroid.openFile(path) ? Promise.resolve() : Promise.reject("Couldn't open it (no app for this type, or it isn't there any more)"))
+    : call("open_saved", { path }),
   openLink: (link) => { const url = withoutTracking(link); return window.CarteiroAndroid
     ? (window.CarteiroAndroid.open(url) ? Promise.resolve() : Promise.reject("Only web and email links can be opened"))
     : window.__TAURI__ ? call("open_link", { url }) : Promise.resolve(window.open(url, "_blank", "noopener")); },

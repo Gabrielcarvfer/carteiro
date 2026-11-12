@@ -302,6 +302,20 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 860, false], ["phone", 39
     expect(await js(`document.querySelector("#contacts").hidden`), "Back from a mail conversation left mail");
   });
 
+  await test("a saved attachment can be opened; long paths wrap", async () => {
+    await page(w, h, mobile);
+    await js(`[...document.querySelectorAll("#threads .item")].find((x) => x.textContent.includes("Q3 planning")).click()`); await sleep(1200);
+    await click("[data-click=save-att][data-index='0']"); await sleep(1500);
+    await click("[data-click=save-att][data-index='0']"); await sleep(400);
+    const buttons = await js(`[...document.querySelectorAll(".ask [data-ask]")].map((b) => b.textContent.trim())`);
+    expect(buttons[0] === "Open" && buttons.includes("Save another copy"), `choices: ${buttons}`);
+    const fits = await js(`(() => { const p = document.querySelector(".ask p"); return p.scrollWidth <= p.clientWidth + 1 && getComputedStyle(p).overflowWrap === "anywhere"; })()`);
+    expect(fits, "the path runs past the dialog");
+    await click(".ask [data-ask=open]"); await sleep(300);
+    const opened = await js(`window.__opened ?? []`);
+    expect(opened.length === 1 && /comments_0\.pdf$/.test(opened[0]), `opened: ${opened}`);
+    expect(await js(`!document.querySelector(".ask")`), "dialog closed");
+  });
   await test("find in a conversation: Ctrl+F or the button, opens matching messages, steps", async () => {
     await page(w, h, mobile);
     await js(`[...document.querySelectorAll("#threads .item")].find((x) => x.textContent.includes("Q3 planning")).click()`); await sleep(1200);

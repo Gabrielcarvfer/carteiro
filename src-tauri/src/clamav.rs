@@ -530,6 +530,11 @@ impl Engine {
         }
     }
 
+    /// Whether the device is on the charger (as last told or measured).
+    pub fn is_charging(&self) -> bool {
+        self.charging.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Whether the device is charging (ClamAV then stays running).
     pub fn set_charging(&self, on: bool) {
         self.charging.store(on, std::sync::atomic::Ordering::Relaxed);

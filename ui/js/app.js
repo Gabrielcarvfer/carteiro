@@ -1303,8 +1303,9 @@ on("click", "save-att", async (el) => {
   const a = S.messages.find((m) => m.id === id)?.attachments[index];
   if (isCalendarFile(a) && !(await calendarAttachment(id, index))) return;
   if (saved.has(key)) {
-    const r = await choose(`Already saved to ${saved.get(key)}`, [["again", "Save another copy"]]);
+    const r = await choose(`Already saved to ${saved.get(key)}`, [["open", "Open"], ["again", "Save another copy"]]);
     if (!r) return;
+    if (r.choice === "open") return guard(api.openSaved(saved.get(key)));
   }
   saving.add(key);
   setChip(key, "busy");

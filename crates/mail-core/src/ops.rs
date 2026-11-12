@@ -288,11 +288,31 @@ pub async fn index_clean_text(store: &Mutex<Store>, scanner: &ScannerConfig) -> 
 
 /// `index_clean_text`, telling `progress(done, left)` before each batch.
 pub async fn index_clean_text_with(store: &Mutex<Store>, scanner: &ScannerConfig, progress: &(dyn Fn(usize, usize) + Send + Sync)) -> Result<usize> {
+    index_clean_text_since(store, scanner, progress, None).await
+}
+
+/// Mail checked last time everything was (stored when nothing was left).
+const CAUGHT_UP: &str = "index_caught_up";
+
+/// Where a pass on battery starts: mail since everything was last checked
+/// (a day of margin), or the last two days if it never was. Older mail
+/// waits for the charger.
+pub fn battery_index_since(store: &Mutex<Store>) -> Result<i64> {
+    let caught_up = lock(store)?.get_secret(CAUGHT_UP)?.and_then(|v| v.parse::<i64>().ok());
+    Ok(caught_up.map(|t| t - 86400).unwrap_or(crate::calendar::now() - 2 * 86400))
+}
+
+/// `index_clean_text_with`, only mail dated `since` or later (None: all).
+pub async fn index_clean_text_since(store: &Mutex<Store>, scanner: &ScannerConfig, progress: &(dyn Fn(usize, usize) + Send + Sync), since: Option<i64>) -> Result<usize> {
     let mut done = 0;
     loop {
-        let left = lock(store)?.count_unindexed()?;
-        let batch = lock(store)?.unindexed(25)?;
+        let left = lock(store)?.count_unindexed_since(since)?;
+        let batch = lock(store)?.unindexed_since(25, since)?;
         if batch.is_empty() {
+            // Everything checked (not just the recent part): remember when.
+            if since.is_none() || lock(store)?.count_unindexed()? == 0 {
+                lock(store)?.set_secret(CAUGHT_UP, &crate::calendar::now().to_string())?;
+            }
             return Ok(done);
         }
         progress(done, left);
@@ -1131,6 +1151,43 @@ mod tests {
         let exe = insert(message_with("invoice.pdf.exe"));
         assert!(save_attachment(&store, exe, 0, &dir, &clean).await.unwrap_err().to_string().contains("disguised"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // On battery only recent mail is checked; old mail (downloaded for
+    // offline use) waits for the charger, which also records when
+    // everything was last checked.
+    #[tokio::test]
+    async fn battery_pass_checks_recent_mail_only() {
+        let store = Mutex::new(Store::open_in_memory().unwrap());
+        let now = crate::calendar::now();
+        let insert = |id: &str, date: i64| {
+            let st = store.lock().unwrap();
+            let mut a = crate::account::Account {
+                id: 0, name: "n".into(), email: format!("{id}@x"), username: id.into(), incoming_protocol: Protocol::Imap,
+                incoming: crate::net::Endpoint { host: "h".into(), port: 1, security: crate::net::Security::Tls, allow_insecure: false },
+                smtp: crate::net::Endpoint { host: "h".into(), port: 1, security: crate::net::Security::Tls, allow_insecure: false },
+                smtp_username: None, signature: String::new(), auth: Default::default(),
+            };
+            st.add_account(&mut a).unwrap();
+            let raw = format!("Message-ID: <{id}@x>\r\nSubject: s\r\n\r\nhi\r\n").into_bytes();
+            let mut meta = parse_meta(&raw);
+            meta.date = date;
+            st.insert_message(&crate::store::NewMessage { account_id: a.id, folder: "INBOX".into(), uid: Some(1), pop_uidl: None, meta, seen: true, flagged: false, size: 1, raw: Some(raw) }).unwrap()
+        };
+        let old = insert("old", now - 365 * 86400);
+        let new = insert("new", now - 3600);
+        let clean = ScannerConfig { clamd_addr: fake_clamd(b"stream: OK\0").await, ..Default::default() };
+        let since = battery_index_since(&store).unwrap();
+        assert!((now - 2 * 86400 - since).abs() < 60, "never caught up: the last two days");
+        assert_eq!(index_clean_text_since(&store, &clean, &|_, _| {}, Some(since)).await.unwrap(), 1);
+        assert!(store.lock().unwrap().is_indexed(new).unwrap());
+        assert!(!store.lock().unwrap().is_indexed(old).unwrap(), "the old one waits for the charger");
+        assert!(store.lock().unwrap().get_secret(CAUGHT_UP).unwrap().is_none(), "not caught up yet");
+        // On the charger: everything, and the time it was all done.
+        assert_eq!(index_clean_text_since(&store, &clean, &|_, _| {}, None).await.unwrap(), 1);
+        assert!(store.lock().unwrap().is_indexed(old).unwrap());
+        let next = battery_index_since(&store).unwrap();
+        assert!((now - 86400 - next).abs() < 60, "next battery pass: from a day before then");
     }
 
     #[test]
