@@ -56,6 +56,8 @@ pub struct MessageView {
     pub remote_images: Vec<crate::tracking::RemoteImage>,
     /// Calendar invitations it carried, as now in the Invitations calendar.
     pub invites: Vec<crate::store::StoredEvent>,
+    /// Bcc recipients, when the message names them (your sent copies).
+    pub bcc: Vec<crate::message::Addr>,
 }
 
 /// After a clean scan: the message's text becomes searchable and its
@@ -357,6 +359,7 @@ async fn build_views(store: &Mutex<Store>, msgs: Vec<StoredMessage>, scanner: &S
                 let invites = lock(store)?.invites_of(m.id, crate::calendar::now())?;
                 let has_quote = !quoted.is_empty() || body.html.as_deref().is_some_and(|h| h.contains("<blockquote") || h.contains("gmail_quote") || h.contains("divRplyFwdMsg"));
                 MessageView {
+                    bcc: crate::message::bcc_of(&raw),
                     msg: m,
                     body_text: new,
                     quote_missing: missing_quote_levels(&refs, &present, has_quote),
@@ -382,6 +385,7 @@ async fn build_views(store: &Mutex<Store>, msgs: Vec<StoredMessage>, scanner: &S
                 quote_missing: 0,
                 remote_images: Vec::new(),
                 invites: Vec::new(),
+                bcc: Vec::new(),
             },
         };
         views.push(view);

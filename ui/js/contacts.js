@@ -129,7 +129,7 @@ on("click", "ct-jump", (el, e) => {
   render();
   $(`#contacts .ct-letter[data-letter="${el.dataset.letter}"]`)?.scrollIntoView({ block: "start" });
 });
-document.addEventListener("contact-back", () => { K.selected = null; render(); });
+document.addEventListener("contact-back", () => contactBack());
 
 function detail(c) {
   return html`<div class="pane">
@@ -238,7 +238,29 @@ on("input", "ct-search", (el) => {
   }, 150);
 });
 on("click", "ct-open", (el) => { K.selected = +el.dataset.id; render(); loadThreads(K.list.find((c) => c.id === K.selected)); });
-on("click", "ct-back", () => { K.selected = null; render(); });
+on("click", "ct-back", () => contactBack());
+// Closing a contact opened from an email goes back to that email.
+function contactBack() {
+  const back = K.returnTo;
+  K.returnTo = null;
+  K.selected = null;
+  render();
+  if (back === "mail") document.querySelector("[data-click=mode][data-mode=mail]")?.click();
+}
+
+/** A person from an email: their contact, or a new one filled in. */
+export async function openContactFor(name, email) {
+  const lower = email.toLowerCase();
+  const found = ((await api.listContacts(email).catch(() => [])) ?? []).find((c) => c.emails.some((e) => e.toLowerCase() === lower));
+  if (!found) return editor({ name: name || "", emails: [email] });
+  document.querySelector("[data-click=mode][data-mode=contacts]")?.click();
+  K.query = "";
+  await load();
+  K.returnTo = "mail";
+  K.selected = found.id;
+  render();
+  loadThreads(K.list.find((c) => c.id === found.id) ?? found);
+}
 on("click", "ct-new", () => editor({}));
 on("click", "ct-edit", () => editor(K.list.find((c) => c.id === K.selected)));
 on("click", "ct-mail", (el) => openCompose({ to: el.dataset.to }));

@@ -30,6 +30,7 @@ const threads = {
     msg(1, "t1", ["Ana Souza", "ana@example.com"], "Q3 planning", "Hi all,\n\nCan we meet Thursday to go over the Q3 plan?\n\nAna", 7200),
     msg(2, "t1", ["Bruno Lima", "bruno@example.com"], "RE: Q3 planning", "Thursday works for me. 2pm?", 3600),
     { ...msg(3, "t1", ["Ana Souza", "ana@example.com"], "RE: Q3 planning", "2pm it is, I'll send an invite.", 600, false),
+      cc: [{ name: "Bruno Lima", email: "bruno@example.com" }, { name: "", email: "facilities@example.org" }],
       has_attachments: true, attachments: [{ name: "agenda.pdf", mime: "application/pdf", size: 81234, danger: null }, { name: "invite.ics", mime: "text/calendar", size: 1200, danger: null }],
       invites: [{ id: 8, calendar_id: 3, remote_id: "q3-series", title: "Q3 planning", start: Math.floor(now / 86400) * 86400 + 2 * 86400 + 14 * 3600, end: Math.floor(now / 86400) * 86400 + 2 * 86400 + 15 * 3600, all_day: false, floating: false, recurring: true, tzid: "", location: "Room 4", description: "", rsvp: "" }] },
   ],

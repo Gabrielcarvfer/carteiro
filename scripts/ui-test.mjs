@@ -302,6 +302,38 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 860, false], ["phone", 39
     expect(await js(`document.querySelector("#contacts").hidden`), "Back from a mail conversation left mail");
   });
 
+  await test("holding a message's header lists its people; each opens their contact", async () => {
+    await page(w, h, mobile);
+    await js(`[...document.querySelectorAll("#threads .item")].find((x) => x.textContent.includes("Q3 planning")).click()`); await sleep(1200);
+    const head = "#reader article.card:not(.collapsed) .msg-head .who";
+    const [x, y] = await js(`(() => { const r = document.querySelector(${JSON.stringify(head)}).getBoundingClientRect(); return [r.left + 20, r.top + 8]; })()`);
+    const hold = async () => {
+      if (mobile) { await send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] }); await sleep(700); await send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] }); }
+      else { await send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 }); await sleep(700); await send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 }); }
+      await sleep(400);
+    };
+    const openCards = () => js(`document.querySelectorAll("#reader article.card:not(.collapsed)").length`);
+    const before = await openCards();
+    await hold();
+    const groups = await js(`[...document.querySelectorAll(".people-sheet h3")].map((h) => h.textContent)`);
+    expect(JSON.stringify(groups) === '["From","To","Cc"]', `groups: ${groups}`);
+    expect(await openCards() === before, "holding folded the message");
+    const people = await js(`[...document.querySelectorAll(".people-sheet .person")].map((b) => b.dataset.email)`);
+    expect(people.join() === "ana@example.com,demo@example.com,bruno@example.com,facilities@example.org", `people: ${people}`);
+    // Someone not in contacts: a new contact, filled in.
+    await click(".people-sheet [data-email='facilities@example.org']"); await sleep(600);
+    expect(await js(`document.querySelector("#modal [name=emails]")?.value`) === "facilities@example.org", "new contact not filled in");
+    await click("#modal [data-click=modal-close]"); await sleep(300);
+    // A contact: opened; Back returns to the email.
+    await hold();
+    await click(".people-sheet [data-email='ana@example.com']"); await sleep(1200);
+    expect(await js(`!document.querySelector("#contacts").hidden && document.querySelector(".ct-card h1")?.textContent === "Ana Souza"`), "Ana's contact not opened");
+    await js(`window.carteiroBack()`); await sleep(1000);
+    expect(await js(`document.querySelector("#contacts").hidden && /Q3 planning/.test(document.querySelector("#reader").textContent)`), "Back didn't return to the email");
+    // A quick tap still folds it.
+    await click(head); await sleep(400);
+    expect(await openCards() === before - 1, "a quick tap no longer folds");
+  });
   await test("a saved attachment can be opened; long paths wrap", async () => {
     await page(w, h, mobile);
     await js(`[...document.querySelectorAll("#threads .item")].find((x) => x.textContent.includes("Q3 planning")).click()`); await sleep(1200);

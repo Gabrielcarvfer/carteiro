@@ -6,7 +6,7 @@ import { $, choose, html, on, put, raw } from "./dom.js";
 import { addrList, avatar, bytes, folderLabel, icon, longDate, shortDate } from "./format.js";
 import { openCompose, openRules, openSettings, openSetup, ruleFromMessage } from "./dialogs.js";
 import { eventWhen, refreshCalendar, rsvpButtons, showCalendar, showEventDay } from "./calendar.js";
-import { leaveContacts, showContacts, syncPhoneContacts } from "./contacts.js";
+import { leaveContacts, openContactFor, showContacts, syncPhoneContacts } from "./contacts.js";
 
 export const S = {
   accounts: [], account: null, folders: [], folder: "INBOX", threads: [], selected: null, filter: "",
@@ -1278,8 +1278,50 @@ on("click", "thread-act", (el, e) => {
 on("click", "back", () => closeThread());
 on("click", "toggle-msg", (el, e) => {
   if (e.target.closest("button")) return;
+  // The click that ends a press-and-hold doesn't also fold the message.
+  if (Date.now() - headHeldAt < 800) { headHeldAt = 0; return; }
   S.expanded[+el.dataset.id] = !S.expanded[+el.dataset.id];
   renderReader();
+});
+
+// Press and hold a message's header (finger or mouse): who it's from and to,
+// each one opening their contact. A quick tap still folds the message.
+let headHeldAt = 0, headHold = null;
+document.addEventListener("pointerdown", (e) => {
+  const head = e.target.closest?.("#reader .msg-head");
+  if (!head || e.target.closest("button, .menu") || (e.pointerType === "mouse" && e.button !== 0)) return;
+  const x = e.clientX, y = e.clientY;
+  const cancel = () => { clearTimeout(headHold?.timer); headHold = null; document.removeEventListener("pointermove", move); };
+  const move = (ev) => { if (Math.hypot(ev.clientX - x, ev.clientY - y) > 10) cancel(); };
+  headHold = { timer: setTimeout(() => { cancel(); headHeldAt = Date.now(); showPeople(+head.dataset.id); }, 500) };
+  document.addEventListener("pointermove", move);
+  document.addEventListener("pointerup", cancel, { once: true });
+  document.addEventListener("pointercancel", cancel, { once: true });
+});
+// No text selection or system menu from holding a header.
+document.addEventListener("contextmenu", (e) => { if (e.target.closest?.("#reader .msg-head")) e.preventDefault(); });
+
+function showPeople(id) {
+  const m = S.messages.find((x) => x.id === id);
+  if (!m) return;
+  const group = (label, people) => people?.length ? html`<h3>${label}</h3><ul class="people">${people.map((p) => html`
+    <li><button class="person" data-click="person-open" data-name="${p.name}" data-email="${p.email}">
+      ${avatar(p.name || p.email, 32)}<span class="who"><strong>${p.name || p.email}</strong>${p.name ? html`<span class="muted small">${p.email}</span>` : ""}</span>
+    </button></li>`)}</ul>` : "";
+  put("#modal", html`
+    <div class="modal-backdrop" data-click="modal-backdrop">
+      <div class="modal people-sheet" role="dialog" aria-label="People on this email">
+        <header>People on this email<button class="icon-btn" aria-label="Close" data-click="modal-close">${icon("close")}</button></header>
+        <div class="content">
+          ${group("From", [m.from])}${group("To", m.to)}${group("Cc", m.cc)}${group("Bcc", m.bcc)}
+          <p class="muted small">Tap someone to open their contact.</p>
+        </div>
+      </div>
+    </div>`);
+}
+on("click", "person-open", (el) => {
+  put("#modal", "");
+  openContactFor(el.dataset.name, el.dataset.email);
 });
 on("click", "msg-menu", (el) => { S.menuFor = S.menuFor === +el.dataset.id ? null : +el.dataset.id; renderReader(); });
 on("click", "reply", (el) => reply(msgById(el), false));

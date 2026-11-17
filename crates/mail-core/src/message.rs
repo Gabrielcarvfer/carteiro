@@ -67,6 +67,12 @@ fn addrs(a: Option<&Address>) -> Vec<Addr> {
     }
 }
 
+/// The Bcc recipients a message names (your sent copies keep them; mail
+/// you receive never shows them).
+pub fn bcc_of(raw: &[u8]) -> Vec<Addr> {
+    MessageParser::default().parse_headers(raw).map(|m| addrs(m.bcc())).unwrap_or_default()
+}
+
 /// A message id as stored: no angle brackets, and no whitespace (ids can't
 /// contain any, but some senders fold long ones across lines; a line break
 /// inside a conversation key doesn't survive the trip to the page and back).
@@ -490,6 +496,15 @@ mod tests {
         }
         assert_eq!(clean_id("<>"), "");
         assert_eq!(clean_id(" \r\n\t "), "");
+    }
+
+    #[test]
+    fn bcc_from_sent_copies() {
+        let raw = b"From: me@x.org\r\nTo: a@x.org\r\nBcc: Boss <boss@x.org>, c@x.org\r\nSubject: s\r\n\r\nhi\r\n";
+        let b = bcc_of(raw);
+        assert_eq!(b.iter().map(|a| a.email.as_str()).collect::<Vec<_>>(), ["boss@x.org", "c@x.org"]);
+        assert_eq!(b[0].name, "Boss");
+        assert!(bcc_of(b"From: a@x\r\nSubject: s\r\n\r\nhi\r\n").is_empty());
     }
 
     #[test]
