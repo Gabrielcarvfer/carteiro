@@ -330,6 +330,11 @@ for (const [label, w, h, mobile] of [["desktop", 1280, 860, false], ["phone", 39
     expect(await js(`!document.querySelector("#contacts").hidden && document.querySelector(".ct-card h1")?.textContent === "Ana Souza"`), "Ana's contact not opened");
     await js(`window.carteiroBack()`); await sleep(1000);
     expect(await js(`document.querySelector("#contacts").hidden && /Q3 planning/.test(document.querySelector("#reader").textContent)`), "Back didn't return to the email");
+    // The same list from the message's ⋯ menu.
+    await click("#reader article.card:not(.collapsed) [data-click=msg-menu]"); await sleep(300);
+    await click("#reader .menu [data-click=people]"); await sleep(400);
+    expect(await js(`document.querySelectorAll(".people-sheet .person").length`) === 4, "⋯ menu didn't list the people");
+    await click("#modal [data-click=modal-close]"); await sleep(300);
     // A quick tap still folds it.
     await click(head); await sleep(400);
     expect(await openCards() === before - 1, "a quick tap no longer folds");

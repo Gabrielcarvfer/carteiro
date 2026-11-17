@@ -28,6 +28,8 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 pub struct AppState {
     store: Arc<Mutex<Store>>,
+    /// Read-only connection for what the screens list (see Store::open_reader).
+    reader: Mutex<Store>,
     scanner: Mutex<ScannerConfig>,
     settings: Mutex<AppSettings>,
     syncing: AtomicBool,
@@ -126,6 +128,12 @@ fn lock(s: &AppState) -> Res<std::sync::MutexGuard<'_, Store>> {
     s.store.lock().map_err(|_| "database lock poisoned".to_string())
 }
 
+/// The read-only connection: lists and calendars never wait for a sync or a
+/// virus check to let go of the database.
+fn read(s: &AppState) -> Res<std::sync::MutexGuard<'_, Store>> {
+    s.reader.lock().map_err(|_| "database lock poisoned".to_string())
+}
+
 fn client_for(s: &AppState, provider: AuthMethod) -> ClientConfig {
     let cfg = settings(s);
     match provider {
@@ -222,7 +230,7 @@ async fn scanner_on_demand(app: &AppHandle, s: &AppState) {
 
 #[tauri::command]
 async fn list_accounts(state: State<'_, AppState>) -> Res<Vec<Account>> {
-    lock(&state)?.list_accounts().map_err(err)
+    read(&state)?.list_accounts().map_err(err)
 }
 
 #[tauri::command]
@@ -274,12 +282,12 @@ async fn sync_account(state: State<'_, AppState>, account_id: i64) -> Res<SyncRe
 
 #[tauri::command]
 async fn list_folders(state: State<'_, AppState>, account_id: i64) -> Res<Vec<FolderInfo>> {
-    lock(&state)?.list_folders(account_id).map_err(err)
+    read(&state)?.list_folders(account_id).map_err(err)
 }
 
 #[tauri::command]
 async fn list_threads(state: State<'_, AppState>, account_id: i64, folder: String, query: Option<String>, offset: u32, limit: Option<u32>) -> Res<Vec<ThreadSummary>> {
-    lock(&state)?.list_threads(account_id, &folder, query.as_deref(), limit.unwrap_or(100).clamp(1, 5000), offset).map_err(err)
+    read(&state)?.list_threads(account_id, &folder, query.as_deref(), limit.unwrap_or(100).clamp(1, 5000), offset).map_err(err)
 }
 
 #[derive(serde::Serialize)]
@@ -294,7 +302,7 @@ struct UnifiedThread {
 /// Every account's inbox merged into one list, newest first.
 #[tauri::command]
 async fn list_unified(state: State<'_, AppState>, query: Option<String>) -> Res<Vec<UnifiedThread>> {
-    let st = lock(&state)?;
+    let st = read(&state)?;
     let mut out = Vec::new();
     for a in st.list_accounts().map_err(err)? {
         let Some(inbox) = st.folder_by_special(a.id, "inbox").map_err(err)? else { continue };
@@ -639,6 +647,7 @@ async fn background_inner(dir: &std::path::Path, deep: bool, report: &mut Backgr
     };
     let s = AppState {
         store: core.store.clone(),
+        reader: Mutex::new(Store::open_reader(&dir.join("mail.db")).map_err(err)?),
         scanner: Mutex::new(scanner_cfg),
         settings: Mutex::new(cfg.clone()),
         syncing: AtomicBool::new(false),
@@ -1126,7 +1135,7 @@ struct EventSource {
 /// A contact's conversations, newest first.
 #[tauri::command]
 async fn contact_threads(state: State<'_, AppState>, emails: Vec<String>) -> Res<Vec<ContactThread>> {
-    lock(&state)?.threads_with(&emails, 100).map_err(err)
+    read(&state)?.threads_with(&emails, 100).map_err(err)
 }
 
 #[tauri::command]
@@ -1187,7 +1196,7 @@ async fn sync_contacts(state: State<'_, AppState>) -> Res<Vec<String>> {
 
 #[tauri::command]
 async fn list_contacts(state: State<'_, AppState>, query: String) -> Res<Vec<StoredContact>> {
-    lock(&state)?.list_contacts(&query, 5000).map_err(err)
+    read(&state)?.list_contacts(&query, 5000).map_err(err)
 }
 
 #[tauri::command]
@@ -1269,12 +1278,12 @@ async fn list_cal_sources(state: State<'_, AppState>) -> Res<Vec<CalSource>> {
 
 #[tauri::command]
 async fn calendar_events(state: State<'_, AppState>, from: i64, to: i64) -> Res<Vec<StoredEvent>> {
-    lock(&state)?.events_between(from, to).map_err(err)
+    read(&state)?.events_between(from, to).map_err(err)
 }
 
 #[tauri::command]
 async fn search_events(state: State<'_, AppState>, query: String) -> Res<Vec<StoredEvent>> {
-    lock(&state)?.search_events(&query, 200).map_err(err)
+    read(&state)?.search_events(&query, 200).map_err(err)
 }
 
 #[tauri::command]
@@ -1836,8 +1845,10 @@ pub fn run() {
             let clam = core.clam.clone();
             let engine = clam.clone();
             tauri::async_runtime::spawn(async move { engine.run().await });
+            let reader = Store::open_reader(&dir.join("mail.db")).map_err(err)?;
             app.manage(AppState {
                 store: core.store.clone(),
+                reader: Mutex::new(reader),
                 scanner: Mutex::new(scanner),
                 settings: Mutex::new(app_settings),
                 syncing: AtomicBool::new(false),

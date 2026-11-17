@@ -1052,6 +1052,7 @@ function renderMessage(m) {
           <button class="icon-btn hide-narrow" title="Forward" data-click="forward" data-id="${m.id}">${icon("forward")}</button>
           <button class="icon-btn" title="More" data-click="msg-menu" data-id="${m.id}">${icon("more")}</button>
           ${S.menuFor === m.id ? html`<div class="menu" role="menu">
+            <button data-click="people" data-id="${m.id}">People on this email…</button>
             <button data-click="make-rule" data-id="${m.id}">Create rule…</button>
             <button data-click="msg-delete" data-id="${m.id}">Delete this message</button>
             <button data-click="msg-unread" data-id="${m.id}">Mark as unread</button>
@@ -1319,6 +1320,7 @@ function showPeople(id) {
       </div>
     </div>`);
 }
+on("click", "people", (el) => { S.menuFor = null; renderReader(); showPeople(+el.dataset.id); });
 on("click", "person-open", (el) => {
   put("#modal", "");
   openContactFor(el.dataset.name, el.dataset.email);

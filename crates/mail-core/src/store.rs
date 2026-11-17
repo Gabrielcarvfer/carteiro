@@ -434,6 +434,15 @@ impl Store {
         Self::init(Connection::open(path)?)
     }
 
+    /// A second, read-only connection to a database `open` has set up, for
+    /// what the screens show: with WAL it reads while background work
+    /// (sync, virus checks, downloads) writes, instead of waiting for it.
+    pub fn open_reader(path: &Path) -> Result<Self> {
+        let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
+        conn.execute_batch("PRAGMA query_only=ON; PRAGMA busy_timeout=5000;")?;
+        Ok(Self { conn })
+    }
+
     pub fn open_in_memory() -> Result<Self> {
         Self::init(Connection::open_in_memory()?)
     }
@@ -843,17 +852,29 @@ impl Store {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
-        let mut members = self.conn.prepare_cached(
-            "SELECT id, subject, from_name, from_email, snippet FROM messages
-             WHERE account_id = ?1 AND folder = ?2 AND thread_key = ?3 ORDER BY date DESC",
-        )?;
+        // Every shown conversation's messages in one query per 500 (not one
+        // query per conversation), newest first.
+        type Member = (i64, String, String, String, String);
+        let mut by_key: HashMap<String, Vec<Member>> = HashMap::new();
+        for chunk in groups.chunks(500) {
+            let marks = (0..chunk.len()).map(|i| format!("?{}", i + 3)).collect::<Vec<_>>().join(",");
+            let mut args: Vec<rusqlite::types::Value> = vec![account_id.into(), folder.to_string().into()];
+            args.extend(chunk.iter().map(|g| rusqlite::types::Value::from(g.0.clone())));
+            let mut st = self.conn.prepare(&format!(
+                "SELECT thread_key, id, subject, from_name, from_email, snippet FROM messages
+                 WHERE account_id = ?1 AND folder = ?2 AND thread_key IN ({marks}) ORDER BY date DESC"
+            ))?;
+            let rows = st.query_map(rusqlite::params_from_iter(args.iter()), |r| {
+                Ok((r.get::<_, String>(0)?, (r.get::<_, i64>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?, r.get::<_, String>(4)?, r.get::<_, String>(5)?)))
+            })?;
+            for row in rows {
+                let (key, m) = row?;
+                by_key.entry(key).or_default().push(m);
+            }
+        }
         let mut out = Vec::with_capacity(groups.len());
         for (key, last, count, unread, flagged, att) in groups {
-            let rows = members
-                .query_map(params![account_id, folder, key], |r| {
-                    Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?, r.get::<_, String>(4)?))
-                })?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let rows = by_key.remove(&key).unwrap_or_default();
             let Some(latest) = rows.first() else { continue };
             let mut participants: Vec<String> = Vec::new();
             for (_, _, name, email, _) in &rows {
@@ -2381,6 +2402,46 @@ mod tests {
         s.conn.execute("INSERT INTO folders (account_id, name, raw_name, special) VALUES (?1, 'Trash', 'Trash', 'trash')", [a]).unwrap();
         s.conn.execute("UPDATE messages SET folder = 'Trash' WHERE message_id = 'b@x'", []).unwrap();
         assert_eq!(s.threads_with(&["ana@x.org".into()], 50).unwrap().len(), 1);
+    }
+
+    // The screens' read-only connection reads while background work is in
+    // the middle of writing, sees what's committed, and can't write.
+    #[test]
+    fn reader_reads_while_the_writer_writes() {
+        let dir = std::env::temp_dir().join(format!("carteiro-reader-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("mail.db");
+        let w = Store::open(&path).unwrap();
+        let (s0, _) = store_with_account();
+        let mut acct = s0.list_accounts().unwrap().remove(0);
+        acct.id = 0;
+        w.add_account(&mut acct).unwrap();
+        insert(&w, acct.id, 1, meta("one@x", &[], "One", 100));
+        let r = Store::open_reader(&path).unwrap();
+        // A write in progress (as during a sync): the reader isn't held up.
+        w.conn.execute_batch("BEGIN IMMEDIATE; UPDATE messages SET subject = 'Changed';").unwrap();
+        let t = std::time::Instant::now();
+        let seen = r.list_threads(acct.id, "INBOX", None, 100, 0).unwrap();
+        assert!(t.elapsed() < std::time::Duration::from_millis(500), "the reader waited");
+        assert_eq!(seen[0].subject, "One", "not committed yet");
+        w.conn.execute_batch("COMMIT").unwrap();
+        assert_eq!(r.list_threads(acct.id, "INBOX", None, 100, 0).unwrap()[0].subject, "Changed");
+        assert!(r.conn.execute("DELETE FROM messages", []).is_err(), "read-only");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // One query for all shown conversations gives what one per conversation did.
+    #[test]
+    fn list_shows_each_conversations_latest_and_people() {
+        let (s, a) = store_with_account();
+        insert(&s, a, 1, meta("a1@x", &[], "Plans", 100));
+        insert(&s, a, 2, meta("a2@x", &["a1@x"], "Re: Plans", 300));
+        insert(&s, a, 3, meta("b1@x", &[], "Budget", 200));
+        let t = s.list_threads(a, "INBOX", None, 100, 0).unwrap();
+        assert_eq!(t.iter().map(|t| (t.subject.as_str(), t.count, t.last_date)).collect::<Vec<_>>(), [("Plans", 2, 300), ("Budget", 1, 200)]);
+        assert_eq!(t[0].participants, ["Sender a2@x", "Sender a1@x"]);
+        assert_eq!(t[0].latest_id, s.list_threads(a, "INBOX", None, 1, 0).unwrap()[0].latest_id);
     }
 
     #[test]
